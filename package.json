@@ -1,0 +1,24 @@
+{
+	"name": "home-wealth-agent",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"dependencies": {
+		"@earendil-works/pi-agent-core": "0.84.1",
+		"@earendil-works/pi-ai": "0.84.1"
+	},
+	"devDependencies": {
+		"@types/node": "24.12.4",
+		"typescript": "5.9.3"
+	},
+	"scripts": {
+		"start": "node --experimental-strip-types --experimental-sqlite src/channels/cli.ts chat",
+		"reminders": "node --experimental-strip-types --experimental-sqlite src/channels/cli.ts reminders",
+		"schedule": "node --experimental-strip-types --experimental-sqlite src/channels/cli.ts schedule",
+		"test": "node --experimental-strip-types --experimental-sqlite --test test/*.test.ts",
+		"typecheck": "tsc --noEmit"
+	}
+}

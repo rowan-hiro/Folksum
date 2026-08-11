@@ -1,0 +1,59 @@
+# Agent instructions
+
+<!-- driftseal -->
+<!-- driftseal-version: 5 -->
+
+## Agent protocol: intent write-ahead log
+
+This repo uses DriftSeal (`driftseal`) to prevent agent drift. Every work round:
+
+1. **Write intent first**, before modifying, creating, or deleting files, or
+   making any other change that may need a rollback:
+   `driftseal begin "<what this round will accomplish>" --verify "<command or check that proves it>"`.
+   Add one `--decision <id>` for each existing decision this round may change.
+   Single-step commands that only build, check, or record work already done
+   (compiling, running tests, `git add`/`git commit`) need no intent.
+2. **Execute only the intent.** Scope change? Close the current intent
+   (`driftseal end -s partial|abandoned -n "<why>"`) and `driftseal begin` a new one.
+3. **Verify, then close**: run the declared verification, then
+   `driftseal end -s completed|partial|failed|abandoned -n "<what happened>" -r "<verify output>"`.
+   Never report success without closing the intent.
+   Before closing a linked intent as `completed` or `partial`, reconcile every
+   declared decision with `driftseal decision update <id> --status <status> --note "<why>"`.
+   DriftSeal rejects a successful close when a declared decision was not reconciled.
+   Do not edit a decision after reconciling it; run `decision update` again so
+   the final content hash is recorded. Interrupted reconciliation is recovered
+   by the next linked `decision update` or successful `end`. Closing as
+   `failed` or `abandoned` cancels pending recovery for that intent.
+   An authorized Git commit that only stages and records the verified changes and
+   just-closed log finalizes that round without requiring a new intent. Any content
+   change made while preparing the commit does require a new intent.
+4. **Re-anchor after context loss**: run `driftseal status` and `driftseal log --last 3` before
+   doing anything else. The open intent is the source of truth.
+
+Log: `.intent-log/events.jsonl` (override with `$DRIFTSEAL_HOME`); commit it with the code.
+<!-- /driftseal -->
+
+<!-- driftseal-decisions -->
+<!-- driftseal-decisions-version: 5 -->
+
+## Agent protocol: decision log
+
+Record a MADR document only when it preserves decision context that cannot be
+recovered from the intent log and Git history: a rejected or deferred path worth
+revisiting, non-obvious rationale behind a long-lived or costly-to-reverse accepted
+choice, or a deprecated or superseded decision. Do not record routine, local,
+readily reversible choices.
+
+`driftseal decision add "<title>" --context "<problem and constraints>" --outcome "<decision and rationale>" --option "<considered option>" --consequence "<result>"`
+
+Add one `--driver`, `--option`, or `--consequence` flag per item. Use
+`--status proposed|accepted|rejected|deferred|deprecated|superseded` when needed.
+Use `proposed` for a choice still under active consideration. Use `deferred`
+for a deliberately postponed choice and include its revisit trigger.
+Count postponed choices with `driftseal decision list --status deferred --count`,
+then review them with `driftseal decision list --status deferred`.
+When an intent declares an existing decision with `--decision <id>`, use
+`driftseal decision update` to record its status transition or explicit confirmation.
+Commit `.decision-log/` with the code.
+<!-- /driftseal-decisions -->
