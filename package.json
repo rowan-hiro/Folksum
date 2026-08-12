@@ -6,11 +6,11 @@
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/rowan-hiro/Home-Wealth-Manager.git"
+		"url": "git+https://github.com/rowan-hiro/Folksum.git"
 	},
-	"homepage": "https://github.com/rowan-hiro/Home-Wealth-Manager#readme",
+	"homepage": "https://github.com/rowan-hiro/Folksum#readme",
 	"bugs": {
-		"url": "https://github.com/rowan-hiro/Home-Wealth-Manager/issues"
+		"url": "https://github.com/rowan-hiro/Folksum/issues"
 	},
 	"keywords": [
 		"finance",
