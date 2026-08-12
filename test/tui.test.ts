@@ -68,6 +68,14 @@ function createDirectory(context: TestContext): string {
 	return directory;
 }
 
+async function waitFor(condition: () => boolean, description: string): Promise<void> {
+	for (let attempt = 0; attempt < 200; attempt += 1) {
+		if (condition()) return;
+		await new Promise<void>((resolve) => setTimeout(resolve, 1));
+	}
+	assert.fail(`Timed out waiting for ${description}.`);
+}
+
 test("masks secret input without changing the submitted value", () => {
 	const input = new SecretInput();
 	const secret = "sk-proj-this-must-never-be-rendered";
@@ -147,6 +155,94 @@ test("starts and restores the terminal without requiring model credentials", asy
 	assert.equal(terminal.started, true);
 	assert.equal(terminal.drained, true);
 	assert.equal(terminal.stopped, true);
+});
+
+test("keeps settings open while cycling providers and changing another setting", async (context) => {
+	const directory = createDirectory(context);
+	const configPath = join(directory, "config.json");
+	writeFileSync(configPath, "{}\n");
+	const config = loadApplicationConfig({
+		cwd: directory,
+		env: { HWM_CONFIG_PATH: configPath },
+	});
+	const database = new WealthDatabase(":memory:");
+	context.after(() => database.close());
+	const wealth = new WealthService(database, { baseCurrency: "HKD" });
+	const identities = new SessionIdentityService(database);
+	const owner = identities.createMember({
+		householdId: wealth.household.id,
+		displayName: "Owner",
+		role: "owner",
+		timezone: "Asia/Hong_Kong",
+	});
+	identities.bindChannelIdentity({ memberId: owner.id, channel: "cli", externalId: "owner" });
+	const scope = identities.resolve({
+		channel: "cli",
+		externalId: "owner",
+		conversationKey: "persistent-settings-test",
+	});
+	const models = createHomeWealthModels();
+	const originalCheckAuth = models.checkAuth.bind(models);
+	let authChecks = 0;
+	models.checkAuth = async (...args) => {
+		try {
+			return await originalCheckAuth(...args);
+		} finally {
+			authChecks += 1;
+		}
+	};
+	const settingsController = new PiRuntimeSettingsController({ models, config, env: {} });
+	const terminal = new FakeTerminal();
+
+	const running = runHomeWealthTui({
+		wealth,
+		identities,
+		scope,
+		database,
+		currentDate: "2026-08-12",
+		config,
+		models,
+		settingsController,
+		terminal,
+	});
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	terminal.send("\u000f");
+	await waitFor(() => terminal.output.includes("Provider"), "the settings overlay");
+
+	let checkBaseline = authChecks;
+	terminal.send("\r");
+	await waitFor(
+		() => settingsController.current().provider === "anthropic",
+		"the first provider update",
+	);
+	await waitFor(() => authChecks >= checkBaseline + 2, "the first settings refresh");
+
+	checkBaseline = authChecks;
+	terminal.send("\r");
+	await waitFor(
+		() => settingsController.current().provider === "google",
+		"the second provider update without reopening settings",
+	);
+	await waitFor(() => authChecks >= checkBaseline + 2, "the second settings refresh");
+
+	terminal.send("\u001b[B");
+	terminal.send("\u001b[B");
+	checkBaseline = authChecks;
+	terminal.send("\r");
+	await waitFor(
+		() => settingsController.current().thinkingLevel === "medium",
+		"the thinking-level update without reopening settings",
+	);
+	await waitFor(() => authChecks >= checkBaseline + 2, "the final settings refresh");
+
+	assert.deepEqual(settingsController.current(), {
+		provider: "google",
+		model: "gemini-3.6-flash",
+		thinkingLevel: "medium",
+	});
+	terminal.send("\u001b");
+	terminal.send("\u0003");
+	await running;
 });
 
 test("occupies the prompt operation before asynchronous runtime setup", async (context) => {

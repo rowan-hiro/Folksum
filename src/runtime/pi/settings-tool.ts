@@ -35,6 +35,7 @@ export function createRuntimeSettingsTool(
 						Type.Literal("openai-codex"),
 						Type.Literal("anthropic"),
 						Type.Literal("google"),
+						Type.Literal("kimi-coding"),
 					]),
 				),
 				model: Type.Optional(Type.String({ minLength: 1 })),

@@ -98,6 +98,19 @@ export interface SafeAuthStatus {
 	source?: string;
 }
 
+interface AuthViewState {
+	configured: boolean;
+	label: string;
+}
+
+interface SettingsViewState {
+	settings: SettingsList;
+	panel: LockableSettingsPanel;
+	activeProvider: SupportedPiProviderId;
+	auth: AuthViewState;
+	authGeneration: number;
+}
+
 /** Single-line input whose rendered output never contains its underlying value. */
 export class SecretInput extends Input {
 	override render(width: number): string[] {
@@ -136,6 +149,7 @@ class HomeWealthTui {
 	private readonly runtimeFactory: (config: PiRuntimeConfig) => Promise<PiRuntimeAdapter>;
 	private runtime: PiRuntimeAdapter | undefined;
 	private settingsOverlay: OverlayHandle | undefined;
+	private settingsView: SettingsViewState | undefined;
 	private openingSettings = false;
 	private pendingConfirmations: PiConfirmationRequest[] = [];
 	private cancelActivePrompt: (() => void) | undefined;
@@ -145,6 +159,7 @@ class HomeWealthTui {
 	private activeInteraction: Promise<void> | undefined;
 	private modelRequestActive = false;
 	private lastAuthStatus = "checking";
+	private statusGeneration = 0;
 	private busy = false;
 	private shuttingDown = false;
 	private finish: (() => void) | undefined;
@@ -399,9 +414,9 @@ class HomeWealthTui {
 		this.openingSettings = true;
 		try {
 			const snapshot = this.input.settingsController.current();
-			const authStatus = await this.readAuthStatus(snapshot.provider);
+			const auth = await this.readAuthState(snapshot.provider);
 			if (this.shuttingDown) return;
-			let activeProvider = snapshot.provider;
+			let view!: SettingsViewState;
 			const items = [
 				{
 					id: "provider",
@@ -416,11 +431,13 @@ class HomeWealthTui {
 					description: "Installed Pi model ID for the selected provider.",
 					currentValue: snapshot.model ?? "not selected",
 					submenu: (currentValue: string, done: (selectedValue?: string) => void): Component => {
-						const choices = this.input.settingsController.listModels(activeProvider).map((model) => ({
-							value: model.id,
-							label: model.name || model.id,
-							description: model.id,
-						}));
+						const choices = this.input.settingsController
+							.listModels(view.activeProvider)
+							.map((model) => ({
+								value: model.id,
+								label: model.name || model.id,
+								description: model.id,
+							}));
 						const list = new SelectList(choices, 12, TUI_SELECT_THEME);
 						list.setSelectedIndex(
 							Math.max(0, choices.findIndex((item) => item.value === currentValue)),
@@ -441,9 +458,9 @@ class HomeWealthTui {
 					id: "authentication",
 					label: "Authentication",
 					description: "Credentials stay local and are never exposed to the model.",
-					currentValue: authStatus,
+					currentValue: auth.label,
 					submenu: (_currentValue: string, done: (selectedValue?: string) => void): Component => {
-						const choices = this.authActions(activeProvider, authStatus !== "not configured");
+						const choices = this.authActions(view.activeProvider, view.auth.configured);
 						const list = new SelectList(choices, 6, TUI_SELECT_THEME);
 						list.onSelect = (item) => done(item.value);
 						list.onCancel = () => done();
@@ -457,27 +474,83 @@ class HomeWealthTui {
 				10,
 				SETTINGS_THEME,
 				(id, value) => {
-					if (id === "provider") activeProvider = value as SupportedPiProviderId;
-					this.closeSettings();
-					void this.applySetting(id, value);
+					view.panel.setLocked(true);
+					this.tui.requestRender();
+					void this.applySettingFromView(view, id, value);
 				},
 				() => this.closeSettings(),
 			);
-			this.settingsOverlay = this.tui.showOverlay(settings, {
+			const panel = new LockableSettingsPanel(settings);
+			view = {
+				settings,
+				panel,
+				activeProvider: snapshot.provider,
+				auth,
+				authGeneration: 0,
+			};
+			const overlay = this.tui.showOverlay(panel, {
 				width: "75%",
 				minWidth: 44,
 				maxHeight: "80%",
 				anchor: "center",
 				margin: 1,
 			});
+			this.settingsView = view;
+			this.settingsOverlay = overlay;
 		} finally {
 			this.openingSettings = false;
 		}
 	}
 
 	private closeSettings(): void {
+		if (this.settingsView) this.settingsView.authGeneration += 1;
+		this.settingsView = undefined;
 		this.settingsOverlay?.hide();
 		this.settingsOverlay = undefined;
+	}
+
+	private async applySettingFromView(
+		view: SettingsViewState,
+		id: string,
+		value: string,
+	): Promise<void> {
+		const revealTranscript = id === "authentication";
+		const overlay = this.settingsOverlay;
+		if (revealTranscript && this.settingsView === view) overlay?.setHidden(true);
+		try {
+			await this.applySetting(id, value);
+			await this.synchronizeSettingsView(view);
+		} catch (error) {
+			this.append("System", safeError(error));
+		} finally {
+			if (this.settingsView === view) {
+				view.panel.setLocked(false);
+				if (revealTranscript) overlay?.setHidden(false);
+				this.tui.requestRender();
+			}
+		}
+	}
+
+	private async synchronizeSettingsView(view: SettingsViewState): Promise<void> {
+		if (this.settingsView !== view) return;
+		const settings = this.input.settingsController.current();
+		view.activeProvider = settings.provider;
+		view.settings.updateValue("provider", settings.provider);
+		view.settings.updateValue("model", settings.model ?? "not selected");
+		view.settings.updateValue("thinkingLevel", settings.thinkingLevel);
+
+		const generation = ++view.authGeneration;
+		const auth = await this.readAuthState(settings.provider);
+		if (
+			this.settingsView !== view ||
+			generation !== view.authGeneration ||
+			this.input.settingsController.current().provider !== settings.provider
+		) {
+			return;
+		}
+		view.auth = auth;
+		view.settings.updateValue("authentication", auth.label);
+		this.tui.requestRender();
 	}
 
 	private async applySetting(id: string, value: string): Promise<void> {
@@ -730,19 +803,27 @@ class HomeWealthTui {
 		this.tui.requestRender();
 	}
 
-	private async readAuthStatus(provider: SupportedPiProviderId): Promise<string> {
+	private async readAuthState(provider: SupportedPiProviderId): Promise<AuthViewState> {
 		try {
-			return formatAuthStatus(await this.input.models.checkAuth(provider));
+			const auth = await this.input.models.checkAuth(provider);
+			return { configured: auth !== undefined, label: formatAuthStatus(auth) };
 		} catch {
-			return "configuration error";
+			return { configured: false, label: "configuration error" };
 		}
 	}
 
 	private async refreshStatus(): Promise<void> {
+		const generation = ++this.statusGeneration;
 		const settings = this.input.settingsController.current();
-		const authStatus = await this.readAuthStatus(settings.provider);
-		if (this.shuttingDown) return;
-		this.lastAuthStatus = authStatus;
+		const auth = await this.readAuthState(settings.provider);
+		if (
+			this.shuttingDown ||
+			generation !== this.statusGeneration ||
+			this.input.settingsController.current().provider !== settings.provider
+		) {
+			return;
+		}
+		this.lastAuthStatus = auth.label;
 		this.renderStatus();
 	}
 
@@ -780,6 +861,32 @@ class HomeWealthTui {
 		}
 		this.tui.stop();
 		this.finish?.();
+	}
+}
+
+class LockableSettingsPanel implements Component {
+	private readonly settings: SettingsList;
+	private locked = false;
+
+	constructor(settings: SettingsList) {
+		this.settings = settings;
+	}
+
+	setLocked(locked: boolean): void {
+		this.locked = locked;
+	}
+
+	render(width: number): string[] {
+		const lines = this.settings.render(width);
+		return this.locked ? [...lines, "", SETTINGS_THEME.hint("  Applying…")] : lines;
+	}
+
+	handleInput(data: string): void {
+		if (!this.locked) this.settings.handleInput(data);
+	}
+
+	invalidate(): void {
+		this.settings.invalidate();
 	}
 }
 

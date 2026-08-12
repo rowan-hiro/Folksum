@@ -88,6 +88,8 @@ flow. Non-secret choices are persisted in the JSON configuration file. Provider
 credentials are kept separately in `~/.home-wealth-manager/auth.json`; override
 that location with `HWM_AUTH_PATH` when needed. The credential directory and
 file are created with `0700` and `0600` permissions on POSIX systems.
+`kimi-coding` supports both `KIMI_API_KEY` and the Kimi Code subscription
+device-code OAuth flow through this settings screen.
 
 The model may update only provider, model, and thinking level through the
 `update_runtime_settings` tool. Credentials must never be pasted into chat or
@@ -129,7 +131,7 @@ Runtime configuration, in descending precedence:
 | `HWM_SESSION` | `session` | `default` | CLI conversation key |
 | `HWM_MEMBER_NAME` | `memberName` | `Local Owner` | Name used when creating the initial member |
 | `HWM_TIMEZONE` | `timezone` | `Asia/Hong_Kong` | Timezone used for the initial member and reminders |
-| `HWM_PROVIDER` | `provider` | `openai` | Pi model provider: `openai`, `openai-codex`, `anthropic`, or `google` |
+| `HWM_PROVIDER` | `provider` | `openai` | Pi model provider: `openai`, `openai-codex`, `anthropic`, `google`, or `kimi-coding` |
 | `HWM_MODEL` | `model` | none | Pi model ID; required before sending a chat prompt |
 | `HWM_THINKING_LEVEL` | `thinkingLevel` | `low` | Pi reasoning level from `off` through `max`, subject to model support |
 | `HWM_AUTH_PATH` | none | `~/.home-wealth-manager/auth.json` | User-scoped provider credential file |

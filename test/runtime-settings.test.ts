@@ -68,6 +68,33 @@ test("changes provider with a catalog-valid default model and applies it live", 
 	});
 });
 
+test("selects the Pi Coding Agent default model when switching to Kimi Coding", async (context) => {
+	const directory = createDirectory(context);
+	const configPath = join(directory, "config.json");
+	writeFileSync(configPath, JSON.stringify({ provider: "openai", model: "gpt-4.1" }));
+	const controller = new PiRuntimeSettingsController({
+		models: createHomeWealthModels(),
+		config: {
+			configPath,
+			provider: "openai",
+			model: "gpt-4.1",
+			thinkingLevel: "low",
+		},
+		env: {},
+	});
+
+	const changed = await controller.update({ provider: "kimi-coding" });
+	assert.deepEqual(changed, {
+		provider: "kimi-coding",
+		model: "kimi-for-coding",
+		thinkingLevel: "low",
+	});
+	assert.deepEqual(JSON.parse(readFileSync(configPath, "utf8")), {
+		provider: "kimi-coding",
+		model: "kimi-for-coding",
+	});
+});
+
 test("rejects a model outside the selected provider without changing state or disk", async (context) => {
 	const directory = createDirectory(context);
 	const configPath = join(directory, "config.json");

@@ -194,6 +194,10 @@ test("rejects missing explicit files and invalid JSON settings", (context) => {
 	assert.equal(codexConfig.provider, "openai-codex");
 	assert.equal(codexConfig.thinkingLevel, "max");
 
+	writeFileSync(path, JSON.stringify({ provider: "kimi-coding" }));
+	const kimiConfig = loadApplicationConfig({ cwd: directory, env: { HWM_CONFIG_PATH: path } });
+	assert.equal(kimiConfig.provider, "kimi-coding");
+
 	writeFileSync(path, JSON.stringify({ provider: "unknown" }));
 	assert.throws(
 		() => loadApplicationConfig({ cwd: directory, env: { HWM_CONFIG_PATH: path } }),

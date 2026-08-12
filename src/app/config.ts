@@ -31,7 +31,12 @@ const RUNTIME_SETTING_ENVIRONMENT_VARIABLES = {
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
-export type ModelProviderId = "openai" | "openai-codex" | "anthropic" | "google";
+export type ModelProviderId =
+	| "openai"
+	| "openai-codex"
+	| "anthropic"
+	| "google"
+	| "kimi-coding";
 export type RuntimeThinkingLevel = (typeof THINKING_LEVELS)[number];
 export type WritableRuntimeSettingKey = keyof typeof RUNTIME_SETTING_ENVIRONMENT_VARIABLES;
 
@@ -88,7 +93,7 @@ export function loadApplicationConfig(options: LoadApplicationConfigOptions = {}
 	const provider = requiredString(file, "provider", env.HWM_PROVIDER, "openai");
 	if (!isModelProvider(provider)) {
 		throw new ApplicationConfigError(
-			`Unsupported provider "${provider}". Use openai, openai-codex, anthropic, or google.`,
+			`Unsupported provider "${provider}". Use openai, openai-codex, anthropic, google, or kimi-coding.`,
 		);
 	}
 
@@ -205,7 +210,8 @@ function isModelProvider(value: string): value is ModelProviderId {
 		value === "openai" ||
 		value === "openai-codex" ||
 		value === "anthropic" ||
-		value === "google"
+		value === "google" ||
+		value === "kimi-coding"
 	);
 }
 
@@ -216,7 +222,7 @@ export function isRuntimeThinkingLevel(value: string): value is RuntimeThinkingL
 function validateRuntimeSettingsPatch(patch: Record<string, unknown>): void {
 	if ("provider" in patch && (typeof patch.provider !== "string" || !isModelProvider(patch.provider))) {
 		throw new ApplicationConfigError(
-			`Unsupported provider "${String(patch.provider)}". Use openai, openai-codex, anthropic, or google.`,
+			`Unsupported provider "${String(patch.provider)}". Use openai, openai-codex, anthropic, google, or kimi-coding.`,
 		);
 	}
 	if (

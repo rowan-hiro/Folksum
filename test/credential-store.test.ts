@@ -217,4 +217,10 @@ test("shared model registry installs exactly the supported providers", () => {
 	for (const provider of SUPPORTED_PI_PROVIDERS) {
 		assert.equal(getDefaultPiModel(models, provider).id, DEFAULT_PI_MODELS[provider]);
 	}
+
+	const kimi = models.getProvider("kimi-coding");
+	assert.equal(kimi?.auth.apiKey?.name, "Kimi API key");
+	assert.equal(kimi?.auth.oauth?.loginLabel, "Sign in with Kimi Code");
+	assert.equal(kimi?.auth.oauth?.isSubscription, true);
+	assert.equal(getDefaultPiModel(models, "kimi-coding").id, "kimi-for-coding");
 });
