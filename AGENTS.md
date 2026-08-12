@@ -1,5 +1,107 @@
 # Agent instructions
 
+## Project overview
+
+Home Wealth Agent is a local-first, conversational household-finance application.
+It records expenses, income, transfers, credit-card statements and repayments,
+asset valuations, reminders, and net-worth reports. SQLite is the system of
+record; financial mutations are auditable and use a double-entry ledger.
+
+The LLM is an interpretation layer, not the source of financial truth. The Pi
+runtime handles model interaction and tool calling, while application code owns
+identity, validation, confirmation policy, calculations, persistence, and
+scheduling. Keep finance behavior behind the application-defined Finance IR and
+do not give Pi tools direct database access.
+
+Important product constraints:
+
+- Preserve exact amounts: accept decimal strings at boundaries and store scaled
+  integer minor units. Do not use floating-point values for ledger calculations.
+- Balance every transaction within one currency and never combine currencies
+  without an explicit exchange-rate source and valuation time.
+- Correct posted transactions by reversal instead of deletion.
+- Keep data local by default and do not place provider credentials in SQLite.
+- Reminders do not initiate payments. Bank connections, trading, tax
+  calculation, and personalized investment advice are outside the MVP.
+
+See `docs/architecture.md` for the full domain model, security boundaries, tool
+surface, and acceptance criteria.
+
+## Repository layout
+
+- `src/channels/cli.ts` is the executable CLI adapter for chat, reminder checks,
+  and scheduled reminder generation.
+- `src/app/` contains Finance IR orchestration, identity and session handling,
+  confirmation policy, memory rules, and scheduling.
+- `src/core/` contains SQLite persistence, exact-money helpers, domain types,
+  and deterministic wealth and ledger services.
+- `src/runtime/pi/` is the narrow adapter to `pi-agent-core` and `pi-ai`. Keep
+  provider-specific model behavior out of the finance domain.
+- `test/` contains Node test-runner suites for the domain and runtime boundary.
+- `.intent-log/` and `.decision-log/` contain DriftSeal records and must be
+  committed with the changes they describe.
+
+## Development and build
+
+The project is a private ESM TypeScript package managed with npm. It requires
+Node.js 22.19.0 or newer because it uses the built-in SQLite module and Node's
+TypeScript type-stripping support. Use the committed `package-lock.json` for
+reproducible installs:
+
+```sh
+npm ci
+```
+
+There is no emitted production bundle. `tsconfig.json` sets `noEmit`, and the CLI
+runs `.ts` sources directly with Node. Treat strict type-checking as the build
+validation step:
+
+```sh
+npm run typecheck
+```
+
+Run the complete automated test suite with:
+
+```sh
+npm test
+```
+
+Before reporting a code change as complete, run both `npm run typecheck` and
+`npm test`. Tests use Node's built-in test runner, TypeScript stripping, and the
+experimental SQLite flag; do not introduce a separate transpiler unless the
+runtime strategy intentionally changes.
+
+## Running the application
+
+Start interactive chat with:
+
+```sh
+HWM_MODEL=<installed-pi-model-id> npm start
+```
+
+`HWM_PROVIDER` selects `openai`, `anthropic`, or `google` and defaults to
+`openai`. Chat also requires the selected provider's credentials to be available
+to the Pi runtime. The local-only commands do not require an LLM credential:
+
+```sh
+npm run reminders
+npm run schedule
+```
+
+Runtime configuration:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `HWM_DB_PATH` | `.data/wealth.db` | SQLite database path |
+| `HWM_HOUSEHOLD_NAME` | `My Household` | Name used when initializing the household |
+| `HWM_BASE_CURRENCY` | `HKD` | Initial household base currency |
+| `HWM_CLI_IDENTITY` | `local-owner` | External identity for the CLI channel |
+| `HWM_SESSION` | `default` | CLI conversation key |
+| `HWM_MEMBER_NAME` | `Local Owner` | Name used when creating the initial member |
+| `HWM_TIMEZONE` | `Asia/Hong_Kong` | Timezone used for the initial member and reminders |
+| `HWM_PROVIDER` | `openai` | Pi model provider |
+| `HWM_MODEL` | none | Required Pi model ID for interactive chat |
+
 <!-- driftseal -->
 <!-- driftseal-version: 5 -->
 

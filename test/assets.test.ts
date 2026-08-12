@@ -11,6 +11,7 @@ function createFixture(): { database: WealthDatabase; service: WealthService } {
 }
 
 test("uses the latest eligible valuation and keeps net worth separated by currency", (context) => {
+	context.mock.timers.enable({ apis: ["Date"], now: new Date("2026-08-01T00:00:00.000Z") });
 	const { database, service } = createFixture();
 	context.after(() => database.close());
 
