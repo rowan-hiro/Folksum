@@ -179,7 +179,7 @@ Runtime configuration, in descending precedence:
 | `FOLKSUM_AUTH_PATH` | none | `~/.folksum/auth.json` | User-scoped provider credential file |
 
 <!-- driftseal -->
-<!-- driftseal-version: 5 -->
+<!-- driftseal-version: 7 -->
 
 ## Agent protocol: intent write-ahead log
 
@@ -207,13 +207,21 @@ This repo uses DriftSeal (`driftseal`) to prevent agent drift. Every work round:
    just-closed log finalizes that round without requiring a new intent. Any content
    change made while preparing the commit does require a new intent.
 4. **Re-anchor after context loss**: run `driftseal status` and `driftseal log --last 3` before
-   doing anything else. The open intent is the source of truth.
+   doing anything else. The open intent is the source of truth: resume it when its
+   objective still matches the current task; otherwise close it (`partial` or
+   `abandoned`, with a note) and `begin` a new one.
+
+**Log access goes only through DriftSeal.** Never read, edit, move, or delete
+`.intent-log/events.jsonl` (or anything under `$DRIFTSEAL_HOME`) directly; use
+`driftseal` commands or the MCP tools. Retire meaningless closed records with
+`driftseal reclaim [id ...] --reason "<why>"` — it appends a marker, never
+deletes log lines; `driftseal unreclaim <id> --reason "<why>"` restores one.
 
 Log: `.intent-log/events.jsonl` (override with `$DRIFTSEAL_HOME`); commit it with the code.
 <!-- /driftseal -->
 
 <!-- driftseal-decisions -->
-<!-- driftseal-decisions-version: 5 -->
+<!-- driftseal-decisions-version: 7 -->
 
 ## Agent protocol: decision log
 
@@ -223,7 +231,7 @@ revisiting, non-obvious rationale behind a long-lived or costly-to-reverse accep
 choice, or a deprecated or superseded decision. Do not record routine, local,
 readily reversible choices.
 
-`driftseal decision add "<title>" --context "<problem and constraints>" --outcome "<decision and rationale>" --option "<considered option>" --consequence "<result>"`
+`driftseal decision add "<title>" --context "<problem and constraints>" --outcome "<decision and rationale>" --driver "<decision driver>" --option "<considered option>" --consequence "<result>"`
 
 Add one `--driver`, `--option`, or `--consequence` flag per item. Use
 `--status proposed|accepted|rejected|deferred|deprecated|superseded` when needed.
