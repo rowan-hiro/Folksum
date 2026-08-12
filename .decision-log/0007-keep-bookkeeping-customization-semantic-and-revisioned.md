@@ -75,3 +75,10 @@ Confirmed in migration and user documentation: schema version 8 owns immutable s
 Status: Accepted → Accepted
 
 Confirmed after final hardening: profile activation performs validation and optimistic revision checks under one immediate SQLite transaction, stored hashes and account/profile references are verified, custom fields are limited to the implemented transaction scope, and preview/file outputs remain bounded declarative projections.
+
+<!-- driftseal-reconciliation: 9b6dd7cd-3e9a-40d9-8be9-40f94a02eb27 -->
+### 2026-08-12T15:59:54.108Z — Intent `2026-08-12-025`
+
+Status: Accepted → Accepted
+
+Confirmed that schema version 9 now owns channel update receipts without changing semantic bookkeeping; the deferred ledger-integrity migration is renumbered to version 10.

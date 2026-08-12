@@ -40,6 +40,8 @@ surface, and acceptance criteria.
   line-oriented chat, reminder checks, and scheduled reminder generation.
 - `src/channels/tui.ts` owns the local `pi-tui` presentation layer, including
   model settings, provider login, streaming output, and confirmations.
+- `src/channels/telegram*.ts` contains the allow-listed long-polling Telegram
+  adapter, callback rendering, and deterministic reminder delivery.
 - `src/app/` contains Finance IR orchestration, identity and session handling,
   confirmation policy, memory rules, and scheduling.
 - `src/core/` contains SQLite persistence, exact-money helpers, domain types,
@@ -130,6 +132,18 @@ terminals and requires a configured model:
 FOLKSUM_MODEL=<installed-pi-model-id> npm run chat
 ```
 
+The Telegram alpha uses long polling from a dedicated private finance chat.
+Configure provider credentials in the local TUI, copy `telegram.example.json`
+to a private `0600` file, map Telegram users to IDs from `folksum members`, and
+pass the bot token only through the environment:
+
+```sh
+FOLKSUM_TELEGRAM_BOT_TOKEN=<bot-token> npm run telegram
+```
+
+The process refuses to replace an active webhook. Voice messages are not
+downloaded or transcribed in this alpha.
+
 Common settings are loaded from `.data/config.json` when it exists. Set
 `FOLKSUM_CONFIG_PATH` to use another JSON file; a relative path is resolved from the
 process working directory. Copy `config.example.json` to `.data/config.json` as
@@ -140,6 +154,7 @@ credential:
 ```sh
 npm run reminders
 npm run schedule
+folksum members
 ```
 
 Bookkeeping profiles use revision-aware JSON documents. These commands inspect,
@@ -177,6 +192,8 @@ Runtime configuration, in descending precedence:
 | `FOLKSUM_MODEL` | `model` | none | Pi model ID; required before sending a chat prompt |
 | `FOLKSUM_THINKING_LEVEL` | `thinkingLevel` | `low` | Pi reasoning level from `off` through `max`, subject to model support |
 | `FOLKSUM_AUTH_PATH` | none | `~/.folksum/auth.json` | User-scoped provider credential file |
+| `FOLKSUM_TELEGRAM_CONFIG_PATH` | none | `.data/telegram.json` | Private Telegram chat/user/member mapping |
+| `FOLKSUM_TELEGRAM_BOT_TOKEN` | none | none | Environment-only Telegram bot credential |
 
 <!-- driftseal -->
 <!-- driftseal-version: 7 -->

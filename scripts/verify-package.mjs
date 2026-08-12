@@ -15,11 +15,21 @@ import { join, resolve } from "node:path";
 const projectRoot = resolve(import.meta.dirname, "..");
 const workspace = mkdtempSync(join(tmpdir(), "folksum-package-"));
 const commandTimeout = parseTimeout(process.env.FOLKSUM_PACKAGE_VERIFY_TIMEOUT_MS);
-const piDependencies = [
+const externalDependencies = [
 	"@earendil-works/pi-agent-core",
 	"@earendil-works/pi-ai",
 	"@earendil-works/pi-tui",
+	"@grammyjs/runner",
+	"grammy",
 ];
+
+const expectedDependencyVersions = {
+	"@earendil-works/pi-agent-core": "0.84.1",
+	"@earendil-works/pi-ai": "0.84.1",
+	"@earendil-works/pi-tui": "0.84.1",
+	"@grammyjs/runner": "2.0.3",
+	grammy: "1.45.1",
+};
 
 try {
 	const packDirectory = join(workspace, "pack");
@@ -46,13 +56,14 @@ try {
 	assert.ok(artifact, "npm pack did not describe its artifact");
 	assert.equal(artifact.name, "folksum");
 	assert.equal(artifact.filename, `folksum-${artifact.version}.tgz`);
-	assert.deepEqual(artifact.bundled ?? [], [], "Pi dependencies must not be bundled");
+	assert.deepEqual(artifact.bundled ?? [], [], "runtime dependencies must not be bundled");
 
 	const packagedPaths = artifact.files.map((file) => file.path);
 	for (const requiredPath of [
 		"LICENSE",
 		"README.md",
 		"config.example.json",
+		"telegram.example.json",
 		"dist/channels/cli.js",
 		"package.json",
 	]) {
@@ -61,7 +72,7 @@ try {
 	for (const path of packagedPaths) {
 		assert.match(
 			path,
-			/^(?:LICENSE|README\.md|config\.example\.json|package\.json|dist\/.*\.js)$/,
+			/^(?:LICENSE|README\.md|config\.example\.json|telegram\.example\.json|package\.json|dist\/.*\.js)$/,
 			`unexpected package entry: ${path}`,
 		);
 		assert.doesNotMatch(
@@ -99,12 +110,12 @@ try {
 	assert.equal(manifest.name, "folksum");
 	assert.equal(manifest.private, undefined, "publishable manifest must not be private");
 	assert.equal(manifest.bin?.folksum, "dist/channels/cli.js");
-	assert.deepEqual(manifest.files, ["dist", "config.example.json", "README.md"]);
+	assert.deepEqual(manifest.files, ["dist", "config.example.json", "telegram.example.json", "README.md"]);
 	assert.equal(manifest.engines?.node, ">=22.19.0");
 	assert.equal(manifest.bundleDependencies, undefined);
 	assert.equal(manifest.bundledDependencies, undefined);
-	for (const dependency of piDependencies) {
-		assert.equal(manifest.dependencies?.[dependency], "0.84.1");
+	for (const dependency of externalDependencies) {
+		assert.equal(manifest.dependencies?.[dependency], expectedDependencyVersions[dependency]);
 	}
 	for (const lifecycle of ["install", "postinstall", "prepare"]) {
 		assert.equal(manifest.scripts?.[lifecycle], undefined, `consumer lifecycle ${lifecycle} is not allowed`);
@@ -128,13 +139,16 @@ try {
 		/(?:hearthworth|home[-_ ]?wealth|hwm_|\.home-wealth-manager)/i,
 		"compiled output contains the retired product identity",
 	);
-	for (const dependency of piDependencies) {
+	for (const dependency of externalDependencies) {
 		assert.match(
 			compiledSource,
 			new RegExp(`from\\s+["']${escapeRegExp(dependency)}(?:/[^"']*)?["']`),
 			`${dependency} is not preserved as a bare external import`,
 		);
-		assert.equal(resolveInstalledPackageVersion(installDirectory, dependency), "0.84.1");
+		assert.equal(
+			resolveInstalledPackageVersion(installDirectory, dependency),
+			expectedDependencyVersions[dependency],
+		);
 	}
 
 	const localExecutable = join(
@@ -182,6 +196,9 @@ try {
 
 	const reminders = run(globalExecutable, ["reminders"], smokeDirectory, environment);
 	assert.match(reminders, /No credit-card repayments/);
+	const members = JSON.parse(run(globalExecutable, ["members"], smokeDirectory, environment));
+	assert.equal(members.length, 1);
+	assert.equal(members[0]?.role, "owner");
 	const schedule = run(globalExecutable, ["schedule"], smokeDirectory, environment);
 	const scheduleResult = JSON.parse(schedule);
 	assert.equal(scheduleResult.statementsEvaluated, 0);

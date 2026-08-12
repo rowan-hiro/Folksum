@@ -75,6 +75,7 @@ test("migrates v6 statements and allocations to lightweight tracking without rew
 
 	const downgrade = new DatabaseSync(path);
 	downgrade.exec(`
+		DROP TABLE channel_update_receipts;
 		DROP TRIGGER transaction_bookkeeping_immutable_update;
 		DROP TRIGGER transaction_bookkeeping_immutable_delete;
 		DROP TRIGGER transaction_bookkeeping_match_profile_revision;
@@ -101,7 +102,7 @@ test("migrates v6 statements and allocations to lightweight tracking without rew
 	context.after(() => migrated.close());
 	assert.equal(
 		(migrated.connection.prepare("PRAGMA user_version").get() as { user_version: number }).user_version,
-		8,
+		9,
 	);
 	assert.deepEqual(
 		migrated.connection
@@ -118,6 +119,14 @@ test("migrates v6 statements and allocations to lightweight tracking without rew
 			{ name: "bookkeeping_profile_revisions" },
 			{ name: "transaction_bookkeeping" },
 		],
+	);
+	assert.deepEqual(
+		{
+			...(migrated.connection
+				.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'channel_update_receipts'")
+				.get() as object),
+		},
+		{ name: "channel_update_receipts" },
 	);
 	assert.ok(
 		(migrated.connection.prepare("PRAGMA table_info(credit_card_statements)").all() as Array<{ name: string }>).some(

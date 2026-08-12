@@ -5,6 +5,9 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 
 import { loadApplicationConfig, type ApplicationConfig } from "../app/config.ts";
+import { ChannelActionRegistry } from "../app/channel-actions.ts";
+import { ChannelUpdateReceiptStore } from "../app/channel-updates.ts";
+import { ConversationCoordinator, dateInTimezone } from "../app/conversation.ts";
 import { BookkeepingProfileService } from "../app/bookkeeping-profile.ts";
 import { BookkeepingExportService } from "../app/bookkeeping-export.ts";
 import {
@@ -16,6 +19,7 @@ import {
 } from "../app/bookkeeping-files.ts";
 import { ConfirmationStore } from "../app/confirmation.ts";
 import { FinanceApplication } from "../app/finance-application.ts";
+import { containsLikelyCredential } from "../app/input-security.ts";
 import { MemoryRuleService } from "../app/memory.ts";
 import { NotificationOutbox, ReminderScheduler } from "../app/scheduler.ts";
 import { IdentityError, SessionIdentityService } from "../app/session.ts";
@@ -27,7 +31,9 @@ import { createFolksumModels } from "../runtime/pi/models.ts";
 import { createPiRuntime } from "../runtime/pi/runtime.ts";
 import { PiRuntimeSettingsController } from "../runtime/pi/settings.ts";
 import type { PiConfirmationRequest } from "../runtime/pi/tools.ts";
-import { containsLikelyCredential, runFolksumTui } from "./tui.ts";
+import { loadTelegramConfig, type TelegramChannelConfig } from "./telegram-config.ts";
+import { runFolksumTelegram } from "./telegram.ts";
+import { runFolksumTui } from "./tui.ts";
 
 const config = loadApplicationConfig();
 const databasePath = resolve(config.databasePath);
@@ -59,6 +65,8 @@ try {
 		runProfileCommand(profiles, scope, process.argv.slice(3));
 	} else if (command === "export") {
 		runExportCommand(exporter, scope.householdId, process.argv.slice(3));
+	} else if (command === "members") {
+		console.log(JSON.stringify(identities.listMembers(wealth.household.id), null, 2));
 	} else if (command === "tui") {
 		const { models, settingsController } = createModelServices(config);
 		await runFolksumTui({
@@ -86,11 +94,96 @@ try {
 			settingsController,
 			profiles,
 		});
+	} else if (command === "telegram") {
+		await runTelegramCommand({
+			wealth,
+			identities,
+			database,
+			config,
+			profiles,
+			scheduler,
+			outbox,
+		});
 	} else {
-		throw new Error(`Unknown command "${command}". Use tui, chat, reminders, schedule, profile, or export.`);
+		throw new Error(
+			`Unknown command "${command}". Use tui, chat, telegram, members, reminders, schedule, profile, or export.`,
+		);
 	}
 } finally {
 	database.close();
+}
+
+async function runTelegramCommand(input: {
+	wealth: WealthService;
+	identities: SessionIdentityService;
+	database: WealthDatabase;
+	config: ApplicationConfig;
+	profiles: BookkeepingProfileService;
+	scheduler: ReminderScheduler;
+	outbox: NotificationOutbox;
+}): Promise<void> {
+	const modelId = input.config.model;
+	if (!modelId) {
+		throw new Error("A model is required for Telegram. Set model in the JSON config or FOLKSUM_MODEL.");
+	}
+	const telegramConfig = loadTelegramConfig();
+	input.database.transaction(() => {
+		bindTelegramIdentities(input.wealth, input.identities, telegramConfig);
+	});
+	const { models, settingsController } = createModelServices(input.config);
+	const application = new FinanceApplication(
+		input.wealth,
+		new ConfirmationStore(input.database),
+		undefined,
+		input.profiles,
+	);
+	const coordinator = new ConversationCoordinator({
+		identities: input.identities,
+		application,
+		runtimeFactory: ({ scope, currentDate, onConfirmationRequired, onChoiceRequired }) =>
+			createPiRuntime({
+				provider: input.config.provider,
+				modelId,
+				application,
+				identityService: input.identities,
+				scope,
+				currentDate,
+				cardTrackingMode: input.wealth.getCardTrackingMode(),
+				thinkingLevel: input.config.thinkingLevel,
+				models,
+				settingsController,
+				onConfirmationRequired,
+				onChoiceRequired,
+			}),
+	});
+	await runFolksumTelegram({
+		config: telegramConfig,
+		coordinator,
+		actions: new ChannelActionRegistry(),
+		receipts: new ChannelUpdateReceiptStore(input.database),
+		scheduler: input.scheduler,
+		outbox: input.outbox,
+	});
+}
+
+function bindTelegramIdentities(
+	wealth: WealthService,
+	identities: SessionIdentityService,
+	config: Pick<TelegramChannelConfig, "identities">,
+): void {
+	for (const identity of config.identities) {
+		const member = identities.getMember(identity.memberId);
+		if (member.householdId !== wealth.household.id) {
+			throw new IdentityError(
+				`Telegram member "${identity.memberId}" belongs to another household.`,
+			);
+		}
+		identities.ensureChannelIdentity({
+			memberId: identity.memberId,
+			channel: "telegram",
+			externalId: identity.userId,
+		});
+	}
 }
 
 function ensureCliIdentity(wealth: WealthService, identities: SessionIdentityService, config: ApplicationConfig) {
@@ -284,18 +377,4 @@ function runExportCommand(
 			rows: artifact.totalRows,
 		}),
 	);
-}
-
-function dateInTimezone(timezone: string): string {
-	const parts = new Intl.DateTimeFormat("en", {
-		timeZone: timezone,
-		year: "numeric",
-		month: "2-digit",
-		day: "2-digit",
-	}).formatToParts(new Date());
-	const year = parts.find((part) => part.type === "year")?.value;
-	const month = parts.find((part) => part.type === "month")?.value;
-	const day = parts.find((part) => part.type === "day")?.value;
-	if (!year || !month || !day) throw new Error(`Could not calculate date in timezone ${timezone}.`);
-	return `${year}-${month}-${day}`;
 }

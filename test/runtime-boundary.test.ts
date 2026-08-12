@@ -28,14 +28,17 @@ test("declares published Pi packages instead of local checkout dependencies", ()
 	);
 	assert.equal(packageJson.private, undefined);
 	assert.equal(packageJson.bin?.folksum, "dist/channels/cli.js");
-	assert.deepEqual(packageJson.files, ["dist", "config.example.json", "README.md"]);
+	assert.deepEqual(packageJson.files, ["dist", "config.example.json", "telegram.example.json", "README.md"]);
 	assert.equal(packageJson.bundleDependencies, undefined);
 	assert.equal(packageJson.bundledDependencies, undefined);
 	assert.equal(packageJson.scripts.start, "node dist/channels/cli.js tui");
+	assert.equal(packageJson.scripts.telegram, "node dist/channels/cli.js telegram");
 	assert.equal(packageJson.scripts.prepack, "npm run build");
 	assert.equal(packageJson.dependencies["@earendil-works/pi-agent-core"], "0.84.1");
 	assert.equal(packageJson.dependencies["@earendil-works/pi-ai"], "0.84.1");
 	assert.equal(packageJson.dependencies["@earendil-works/pi-tui"], "0.84.1");
+	assert.equal(packageJson.dependencies["@grammyjs/runner"], "2.0.3");
+	assert.equal(packageJson.dependencies.grammy, "1.45.1");
 	for (const version of Object.values(packageJson.dependencies)) {
 		assert.doesNotMatch(version, /^(?:file|link):|\/pi\//);
 	}
@@ -55,6 +58,7 @@ test("isolates Pi model imports to the runtime adapter and Pi TUI imports to its
 		assert.doesNotMatch(source, /from\s+["'](?:\.\.\/)+pi\//, file);
 		const isRuntimeAdapter = file.includes(`${join("runtime", "pi")}/`);
 		const isTuiChannel = file.includes(`${join("channels", "tui")}`);
+		const isTelegramChannel = file.includes(`${join("channels", "telegram")}`);
 		if (!isRuntimeAdapter && !isTuiChannel) {
 			assert.doesNotMatch(source, /from\s+["']@earendil-works\//, file);
 		}
@@ -64,6 +68,9 @@ test("isolates Pi model imports to the runtime adapter and Pi TUI imports to its
 				/from\s+["']@earendil-works\/(?:pi-ai|pi-agent-core)/,
 				file,
 			);
+		}
+		if (!isTelegramChannel) {
+			assert.doesNotMatch(source, /from\s+["'](?:grammy|@grammyjs\/runner)["']/, file);
 		}
 	}
 });
@@ -104,12 +111,18 @@ test("tells the model the active card mode without granting settings authority",
 	};
 	const lightweight = buildFinanceSystemPrompt(scope, "2026-08-12", "lightweight");
 	const integrated = buildFinanceSystemPrompt(scope, "2026-08-12", "integrated");
+	const choices = buildFinanceSystemPrompt(scope, "2026-08-12", "lightweight", {
+		supportsChoices: true,
+	});
 
 	assert.match(lightweight, /credit-card tracking mode: lightweight/);
 	assert.match(lightweight, /statements and repayments are standalone reminders/);
 	assert.match(integrated, /credit-card tracking mode: integrated/);
 	assert.match(integrated, /card purchases and statement repayments use ledger accounts/);
 	assert.match(lightweight, /update_runtime_settings only.*provider, model, or thinking level/);
+	assert.doesNotMatch(lightweight, /request_user_choice/);
+	assert.match(choices, /request_user_choice/);
+	assert.match(choices, /choice never grants financial confirmation/);
 });
 
 test("projects provider messages onto a persistence-safe allowlist", () => {

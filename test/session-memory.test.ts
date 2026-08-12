@@ -47,6 +47,40 @@ test("resolves channel identities into stable application sessions", (context) =
 	);
 });
 
+test("idempotently ensures channel bindings and rejects conflicting members", (context) => {
+	const { database, wealth, identities } = createFixture();
+	context.after(() => database.close());
+	const owner = identities.createMember({
+		householdId: wealth.household.id,
+		displayName: "Owner",
+		role: "owner",
+		timezone: "UTC",
+	});
+	const member = identities.createMember({
+		householdId: wealth.household.id,
+		displayName: "Member",
+		role: "member",
+		timezone: "UTC",
+	});
+
+	assert.equal(
+		identities.ensureChannelIdentity({ memberId: owner.id, channel: "telegram", externalId: "100" }).created,
+		true,
+	);
+	assert.equal(
+		identities.ensureChannelIdentity({ memberId: owner.id, channel: "telegram", externalId: "100" }).created,
+		false,
+	);
+	assert.throws(
+		() => identities.ensureChannelIdentity({ memberId: member.id, channel: "telegram", externalId: "100" }),
+		/already bound to another member/,
+	);
+	assert.deepEqual(
+		identities.listMembers(wealth.household.id).map((candidate) => candidate.id),
+		[owner.id, member.id],
+	);
+});
+
 test("persists channel-neutral JSON transcripts under the application session", (context) => {
 	const { database, wealth, identities } = createFixture();
 	context.after(() => database.close());

@@ -58,6 +58,7 @@ export interface EnqueueNotificationResult {
 export interface SchedulerRunInput {
 	asOf: string;
 	recipients: IdentityScope[];
+	availableAt?: string;
 }
 
 export interface SchedulerRunResult {
@@ -119,23 +120,31 @@ export class NotificationOutbox {
 		return mapNotification(row);
 	}
 
-	listPending(channel?: ChannelKind, asOf = new Date().toISOString()): OutboxNotification[] {
+	listPending(
+		channel?: ChannelKind,
+		asOf = new Date().toISOString(),
+		maxAttempts = Number.MAX_SAFE_INTEGER,
+	): OutboxNotification[] {
 		const normalizedAsOf = normalizeTimestamp(asOf);
+		if (!Number.isSafeInteger(maxAttempts) || maxAttempts <= 0) {
+			throw new Error("Maximum notification attempts must be a positive integer.");
+		}
 		const rows = channel
 			? (this.database.connection
 					.prepare(
 						`SELECT * FROM notification_outbox
-						 WHERE status IN ('pending', 'failed') AND available_at <= ? AND channel = ?
+						 WHERE status IN ('pending', 'failed') AND available_at <= ?
+							AND channel = ? AND attempts < ?
 						 ORDER BY available_at, created_at`,
 					)
-					.all(normalizedAsOf, channel) as unknown as NotificationRow[])
+					.all(normalizedAsOf, channel, maxAttempts) as unknown as NotificationRow[])
 			: (this.database.connection
 					.prepare(
 						`SELECT * FROM notification_outbox
-						 WHERE status IN ('pending', 'failed') AND available_at <= ?
+						 WHERE status IN ('pending', 'failed') AND available_at <= ? AND attempts < ?
 						 ORDER BY available_at, created_at`,
 					)
-					.all(normalizedAsOf) as unknown as NotificationRow[]);
+					.all(normalizedAsOf, maxAttempts) as unknown as NotificationRow[]);
 		return rows.map(mapNotification);
 	}
 
@@ -150,15 +159,17 @@ export class NotificationOutbox {
 		return this.get(id);
 	}
 
-	markFailed(id: string, error: unknown): OutboxNotification {
+	markFailed(id: string, error: unknown, nextAvailableAt?: string): OutboxNotification {
 		const message = error instanceof Error ? error.message : String(error);
+		const availableAt = nextAvailableAt === undefined ? null : normalizeTimestamp(nextAvailableAt);
 		this.database.connection
 			.prepare(
 				`UPDATE notification_outbox
-				 SET status = 'failed', attempts = attempts + 1, error_message = ?
+				 SET status = 'failed', attempts = attempts + 1, error_message = ?,
+					available_at = COALESCE(?, available_at)
 				 WHERE id = ? AND status IN ('pending', 'failed')`,
 			)
-			.run(message, id);
+			.run(message.slice(0, 500), availableAt, id);
 		return this.get(id);
 	}
 }
@@ -176,6 +187,7 @@ export class ReminderScheduler {
 
 	run(input: SchedulerRunInput): SchedulerRunResult {
 		const asOf = normalizeDate(input.asOf);
+		const availableAt = input.availableAt === undefined ? undefined : normalizeTimestamp(input.availableAt);
 		const recipients = input.recipients.filter((scope) => scope.householdId === this.wealth.household.id);
 		if (recipients.length !== input.recipients.length) throw new Error("Scheduler recipient belongs to another household.");
 		const policy = this.getReminderPolicy(asOf);
@@ -194,6 +206,7 @@ export class ReminderScheduler {
 					channel: recipient.channel,
 					kind: "card_payment_reminder",
 					dedupeKey,
+					...(availableAt ? { availableAt } : {}),
 					payload: {
 						type: "card_payment_reminder",
 						statementId: statement.id,

@@ -22,6 +22,7 @@ import {
 } from "@earendil-works/pi-tui";
 
 import type { ApplicationConfig, RuntimeThinkingLevel } from "../app/config.ts";
+import { containsLikelyCredential } from "../app/input-security.ts";
 import { BookkeepingProfileService } from "../app/bookkeeping-profile.ts";
 import { ConfirmationStore } from "../app/confirmation.ts";
 import { FinanceApplication } from "../app/finance-application.ts";
@@ -134,9 +135,7 @@ export function formatAuthStatus(auth: SafeAuthStatus | undefined): string {
 	return source ? `${auth.type} via ${source}` : auth.type;
 }
 
-export function containsLikelyCredential(text: string): boolean {
-	return /\b(?:sk-(?:ant-|proj-)?[A-Za-z0-9_-]{16,}|AIza[A-Za-z0-9_-]{20,})\b/u.test(text);
-}
+export { containsLikelyCredential } from "../app/input-security.ts";
 
 export async function runFolksumTui(input: RunFolksumTuiInput): Promise<void> {
 	const app = new FolksumTui(input);

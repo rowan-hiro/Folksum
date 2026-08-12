@@ -37,3 +37,12 @@ Use a Telegram Bot with long polling for the first one-week alpha. Implement Tel
 * Group free-text capture may require Telegram privacy-mode configuration and therefore a dedicated finance-only chat.
 * The public repository must define a versioned customization boundary with one-way dependency from private configuration to public application code.
 * Later channel adapters can reuse capture behavior without receiving database access or bypassing Finance IR.
+
+## Decision History
+
+<!-- driftseal-reconciliation: 7b450d53-e579-4b04-a488-a5eb021a800b -->
+### 2026-08-12T15:59:54.267Z — Intent `2026-08-12-025`
+
+Status: Accepted → Accepted
+
+Implemented the accepted Telegram long-polling alpha with private allowlists and identity mapping, scoped single-use buttons, durable update receipts, deterministic reminder delivery, deferred voice transcription, and no direct database access from the channel adapter.

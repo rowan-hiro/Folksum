@@ -1,0 +1,17 @@
+{
+	"version": 1,
+	"allowedChats": [
+		{
+			"chatId": "-1001234567890"
+		}
+	],
+	"identities": [
+		{
+			"userId": "123456789",
+			"memberId": "replace-with-an-existing-household-member-id",
+			"reminderDestination": {
+				"chatId": "-1001234567890"
+			}
+		}
+	]
+}

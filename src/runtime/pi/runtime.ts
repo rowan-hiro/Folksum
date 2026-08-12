@@ -7,6 +7,7 @@ import type { IdentityScope } from "../../app/identity.ts";
 import { SessionIdentityService, type SessionMessageRole } from "../../app/session.ts";
 import type { CardTrackingMode } from "../../core/card-tracking.ts";
 import { FileCredentialStore } from "./credential-store.ts";
+import { createUserChoiceTool, type PiChoiceRequest } from "./choice-tool.ts";
 import {
 	createFolksumModels,
 	type SupportedPiProviderId,
@@ -31,6 +32,7 @@ export interface PiRuntimeConfig {
 	models?: MutableModels;
 	settingsController?: PiRuntimeSettingsController;
 	onConfirmationRequired?: (request: PiConfirmationRequest) => void;
+	onChoiceRequired?: (request: PiChoiceRequest) => void;
 }
 
 export class PiRuntimeAdapter {
@@ -103,15 +105,19 @@ export async function createPiRuntime(config: PiRuntimeConfig): Promise<PiRuntim
 		cardTrackingMode: config.cardTrackingMode,
 		...(config.onConfirmationRequired ? { onConfirmationRequired: config.onConfirmationRequired } : {}),
 	});
+	const interactionTools = config.onChoiceRequired
+		? [createUserChoiceTool(config.onChoiceRequired)]
+		: [];
 	const tools = config.settingsController
-		? [...financeTools, createRuntimeSettingsTool(config.settingsController)]
-		: financeTools;
+		? [...financeTools, ...interactionTools, createRuntimeSettingsTool(config.settingsController)]
+		: [...financeTools, ...interactionTools];
 	const agent = new Agent({
 		initialState: {
 			systemPrompt: buildFinanceSystemPrompt(
 				config.scope,
 				config.currentDate,
 				config.cardTrackingMode,
+				{ supportsChoices: config.onChoiceRequired !== undefined },
 			),
 			model: selected.model,
 			thinkingLevel: selected.thinkingLevel,
