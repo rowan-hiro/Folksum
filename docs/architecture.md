@@ -1,10 +1,11 @@
-# Home Wealth Agent Architecture
+# Folksum Architecture
 
 ## 1. Product boundary
 
-Home Wealth Agent is a local-first conversational assistant for a household's
-everyday finances. Pi provides the LLM runtime, streaming, tool calling, and
-conversation loop. The application owns all financial rules and persistence.
+Folksum, the Financial Intelligence & Record Engine, is a local-first
+conversational assistant for a household's everyday finances. Pi provides the
+LLM runtime, streaming, tool calling, and conversation loop. The application
+owns all financial rules and persistence.
 
 The MVP supports:
 
@@ -44,7 +45,7 @@ connectors, consent, and security reviews.
 Telegram / Web / TUI / CLI
         |
         v
-Finance Agent App
+Folksum Application
         |
         |-- Session / Identity
         |-- Finance System Prompt
@@ -71,10 +72,10 @@ Finance Agent App
 ```
 
 The finance domain and SQLite repository sit behind Finance IR execution inside
-Finance Agent App. They are application components, not Pi tools with direct
+the Folksum Application. They are application components, not Pi tools with direct
 database access.
 
-### 3.1 Finance Agent App responsibilities
+### 3.1 Folksum Application responsibilities
 
 | Component | Responsibility |
 | --- | --- |
@@ -105,7 +106,7 @@ version, kind, householdId, actorId, sessionId,
 occurredAt, idempotencyKey, payload, source
 ```
 
-The model may propose an IR payload through a typed tool. Finance Agent App then
+The model may propose an IR payload through a typed tool. The Folksum Application then
 resolves account aliases, validates amounts and dates, applies household rules,
 calculates the risk class, and either executes it or creates a pending operation.
 The ledger never consumes raw model text or unchecked tool arguments.
@@ -144,7 +145,7 @@ rules.
 
 ### 3.5 Pi dependency boundary
 
-`pi-agent-core` and `pi-ai` are external runtime dependencies. Finance Agent App
+`pi-agent-core` and `pi-ai` are external runtime dependencies. The Folksum Application
 imports their published package APIs through a narrow adapter. Application code
 must not:
 
@@ -157,6 +158,12 @@ must not:
 The Pi agent receives only application-defined finance tools. Mutating execution
 is sequential, while safe read-only reports may run in parallel. Replacing or
 upgrading Pi affects the runtime adapter, not Finance IR or finance services.
+
+The release build uses TypeScript emission rather than application bundling.
+Bare `@earendil-works/pi-*` imports remain in the emitted JavaScript, and npm
+installs the exact published Pi packages as runtime dependencies. The Folksum
+tarball contains its own `dist/` output but never Pi source, Pi package contents,
+or `node_modules`.
 
 ## 4. Accounting model
 
@@ -325,7 +332,7 @@ database file, disable foreign-key enforcement, or drop schema triggers.
 A credit card has an account for identity and currency, plus statement settings.
 The local `cardTrackingMode` application setting chooses how new card activity is
 recorded. Its default is `lightweight`; the TUI can switch it to `integrated`, and
-`HWM_CARD_TRACKING_MODE` may override the JSON file. The setting is local-only and
+`FOLKSUM_CARD_TRACKING_MODE` may override the JSON file. The setting is local-only and
 is not exposed through the model's runtime-settings tool.
 
 Each statement snapshots the active accounting mode when it is created. Changing
@@ -451,9 +458,9 @@ writable through the model tool.
 
 The database and non-secret JSON configuration contain no LLM credentials.
 Provider API keys and OAuth tokens use the `pi-ai` credential schema in
-`~/.home-wealth-manager/auth.json` by default. The directory and file are private
+`~/.folksum/auth.json` by default. The directory and file are private
 on POSIX systems (`0700` and `0600`), writes are atomic and serialized, and
-`HWM_AUTH_PATH` may select a different location. Provider environment credentials
+`FOLKSUM_AUTH_PATH` may select a different location. Provider environment credentials
 remain available as a non-persistent fallback. Secret values collected by the
 login flow never enter SQLite sessions, model messages, tool arguments, or tool
 results. Login and logout are local TUI actions; the model can neither read nor

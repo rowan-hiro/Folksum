@@ -4,12 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 
-import { createHomeWealthModels, getDefaultPiModel } from "../src/runtime/pi/models.ts";
+import { createFolksumModels, getDefaultPiModel } from "../src/runtime/pi/models.ts";
 import { PiRuntimeSettingsController } from "../src/runtime/pi/settings.ts";
 import { createRuntimeSettingsTool } from "../src/runtime/pi/settings-tool.ts";
 
 function createDirectory(context: TestContext): string {
-	const directory = mkdtempSync(join(tmpdir(), "home-wealth-runtime-settings-"));
+	const directory = mkdtempSync(join(tmpdir(), "folksum-runtime-settings-"));
 	context.after(() => rmSync(directory, { recursive: true, force: true }));
 	return directory;
 }
@@ -26,7 +26,7 @@ test("changes provider with a catalog-valid default model and applies it live", 
 			householdName: "Preserved Household",
 		}),
 	);
-	const models = createHomeWealthModels();
+	const models = createFolksumModels();
 	const controller = new PiRuntimeSettingsController({
 		models,
 		config: {
@@ -73,7 +73,7 @@ test("selects the Pi Coding Agent default model when switching to Kimi Coding", 
 	const configPath = join(directory, "config.json");
 	writeFileSync(configPath, JSON.stringify({ provider: "openai", model: "gpt-4.1" }));
 	const controller = new PiRuntimeSettingsController({
-		models: createHomeWealthModels(),
+		models: createFolksumModels(),
 		config: {
 			configPath,
 			provider: "openai",
@@ -101,7 +101,7 @@ test("rejects a model outside the selected provider without changing state or di
 	const original = JSON.stringify({ provider: "openai", model: "gpt-4.1", thinkingLevel: "low" });
 	writeFileSync(configPath, original);
 	const controller = new PiRuntimeSettingsController({
-		models: createHomeWealthModels(),
+		models: createFolksumModels(),
 		config: {
 			configPath,
 			provider: "openai",
@@ -128,17 +128,17 @@ test("does not claim a JSON update when an environment override owns the setting
 	const configPath = join(directory, "config.json");
 	writeFileSync(configPath, JSON.stringify({ provider: "openai", model: "gpt-4.1" }));
 	const controller = new PiRuntimeSettingsController({
-		models: createHomeWealthModels(),
+		models: createFolksumModels(),
 		config: {
 			configPath,
 			provider: "openai",
 			model: "gpt-4.1",
 			thinkingLevel: "low",
 		},
-		env: { HWM_THINKING_LEVEL: "low" },
+		env: { FOLKSUM_THINKING_LEVEL: "low" },
 	});
 
-	await assert.rejects(controller.update({ thinkingLevel: "medium" }), /HWM_THINKING_LEVEL/);
+	await assert.rejects(controller.update({ thinkingLevel: "medium" }), /FOLKSUM_THINKING_LEVEL/);
 	assert.equal(controller.current().thinkingLevel, "low");
 	assert.deepEqual(JSON.parse(readFileSync(configPath, "utf8")), {
 		provider: "openai",
@@ -151,7 +151,7 @@ test("exposes one safe conversational tool for runtime settings only", async (co
 	const configPath = join(directory, "config.json");
 	writeFileSync(configPath, JSON.stringify({ provider: "openai", model: "gpt-4.1" }));
 	const controller = new PiRuntimeSettingsController({
-		models: createHomeWealthModels(),
+		models: createFolksumModels(),
 		config: {
 			configPath,
 			provider: "openai",
@@ -182,7 +182,7 @@ test("does not switch the active chat to a provider without authentication", asy
 	const configPath = join(directory, "config.json");
 	writeFileSync(configPath, JSON.stringify({ provider: "openai", model: "gpt-4.1" }));
 	const controller = new PiRuntimeSettingsController({
-		models: createHomeWealthModels(),
+		models: createFolksumModels(),
 		config: {
 			configPath,
 			provider: "openai",

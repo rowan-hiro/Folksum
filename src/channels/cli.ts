@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
@@ -12,11 +14,11 @@ import { ApplicationSettingsController } from "../app/settings.ts";
 import { WealthDatabase } from "../core/database.ts";
 import { WealthService } from "../core/wealth-service.ts";
 import { FileCredentialStore } from "../runtime/pi/credential-store.ts";
-import { createHomeWealthModels } from "../runtime/pi/models.ts";
+import { createFolksumModels } from "../runtime/pi/models.ts";
 import { createPiRuntime } from "../runtime/pi/runtime.ts";
 import { PiRuntimeSettingsController } from "../runtime/pi/settings.ts";
 import type { PiConfirmationRequest } from "../runtime/pi/tools.ts";
-import { containsLikelyCredential, runHomeWealthTui } from "./tui.ts";
+import { containsLikelyCredential, runFolksumTui } from "./tui.ts";
 
 const config = loadApplicationConfig();
 const databasePath = resolve(config.databasePath);
@@ -34,7 +36,7 @@ try {
 	const memory = new MemoryRuleService(database);
 	const outbox = new NotificationOutbox(database);
 	const scheduler = new ReminderScheduler(wealth, memory, outbox);
-	const command = process.argv[2] ?? "chat";
+	const command = process.argv[2] ?? "tui";
 	const today = dateInTimezone(scope.timezone);
 
 	if (command === "reminders") {
@@ -44,7 +46,7 @@ try {
 		console.log(JSON.stringify(result, null, 2));
 	} else if (command === "tui") {
 		const { models, settingsController } = createModelServices(config);
-		await runHomeWealthTui({
+		await runFolksumTui({
 			wealth,
 			identities,
 			scope,
@@ -100,12 +102,12 @@ async function runChat(input: {
 	database: WealthDatabase;
 	today: string;
 	config: ApplicationConfig;
-	models: ReturnType<typeof createHomeWealthModels>;
+	models: ReturnType<typeof createFolksumModels>;
 	settingsController: PiRuntimeSettingsController;
 }): Promise<void> {
 	const modelId = input.config.model;
 	if (!modelId) {
-		throw new Error("A model is required for chat. Set model in the JSON config or HWM_MODEL.");
+		throw new Error("A model is required for chat. Set model in the JSON config or FOLKSUM_MODEL.");
 	}
 	const provider = input.config.provider;
 	const application = new FinanceApplication(input.wealth, new ConfirmationStore(input.database));
@@ -124,7 +126,7 @@ async function runChat(input: {
 		onConfirmationRequired: (request) => pending.push(request),
 	});
 	const readline = createInterface({ input: stdin, output: stdout });
-	console.log(`Home Wealth Agent (${provider}/${modelId}). Type /exit to quit.`);
+	console.log(`Folksum — Financial Intelligence & Record Engine (${provider}/${modelId}). Type /exit to quit.`);
 
 	try {
 		while (true) {
@@ -162,11 +164,11 @@ async function runChat(input: {
 }
 
 function createModelServices(config: ApplicationConfig): {
-	models: ReturnType<typeof createHomeWealthModels>;
+	models: ReturnType<typeof createFolksumModels>;
 	settingsController: PiRuntimeSettingsController;
 } {
 	const credentials = new FileCredentialStore();
-	const models = createHomeWealthModels({ credentials });
+	const models = createFolksumModels({ credentials });
 	const settingsController = new PiRuntimeSettingsController({ models, config });
 	return { models, settingsController };
 }

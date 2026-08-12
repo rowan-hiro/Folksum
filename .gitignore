@@ -1,5 +1,6 @@
 node_modules/
 dist/
+*.tgz
 coverage/
 .data/
 .env
@@ -7,3 +8,4 @@ coverage/
 *.db-shm
 *.db-wal
 /pi/
+.codex/

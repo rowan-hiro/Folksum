@@ -29,11 +29,11 @@ export const DEFAULT_PI_MODELS: Readonly<Record<SupportedPiProviderId, string>> 
 	"kimi-coding": "kimi-for-coding",
 };
 
-export interface CreateHomeWealthModelsOptions {
+export interface CreateFolksumModelsOptions {
 	credentials?: CredentialStore;
 }
 
-export function createHomeWealthModels(options: CreateHomeWealthModelsOptions = {}): MutableModels {
+export function createFolksumModels(options: CreateFolksumModelsOptions = {}): MutableModels {
 	const models = createModels(options.credentials ? { credentials: options.credentials } : undefined);
 	models.setProvider(openaiProvider());
 	models.setProvider(anthropicProvider());

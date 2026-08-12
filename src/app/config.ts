@@ -31,10 +31,10 @@ const FILE_KEYS = new Set([
 ]);
 
 const WRITABLE_SETTING_ENVIRONMENT_VARIABLES = {
-	provider: "HWM_PROVIDER",
-	model: "HWM_MODEL",
-	thinkingLevel: "HWM_THINKING_LEVEL",
-	cardTrackingMode: "HWM_CARD_TRACKING_MODE",
+	provider: "FOLKSUM_PROVIDER",
+	model: "FOLKSUM_MODEL",
+	thinkingLevel: "FOLKSUM_THINKING_LEVEL",
+	cardTrackingMode: "FOLKSUM_CARD_TRACKING_MODE",
 } as const;
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -94,9 +94,9 @@ export class ApplicationConfigError extends Error {
 export function loadApplicationConfig(options: LoadApplicationConfigOptions = {}): ApplicationConfig {
 	const cwd = options.cwd ?? process.cwd();
 	const env = options.env ?? process.env;
-	const configuredPath = env.HWM_CONFIG_PATH;
+	const configuredPath = env.FOLKSUM_CONFIG_PATH;
 	if (configuredPath !== undefined && !configuredPath.trim()) {
-		throw new ApplicationConfigError("HWM_CONFIG_PATH must not be empty.");
+		throw new ApplicationConfigError("FOLKSUM_CONFIG_PATH must not be empty.");
 	}
 
 	const configPath = resolve(cwd, configuredPath?.trim() ?? DEFAULT_CONFIG_PATH);
@@ -105,17 +105,17 @@ export function loadApplicationConfig(options: LoadApplicationConfigOptions = {}
 	if (unknownKey) {
 		throw new ApplicationConfigError(`Unknown configuration value "${unknownKey}" in ${configPath}.`);
 	}
-	const provider = requiredString(file, "provider", env.HWM_PROVIDER, "openai");
+	const provider = requiredString(file, "provider", env.FOLKSUM_PROVIDER, "openai");
 	if (!isModelProvider(provider)) {
 		throw new ApplicationConfigError(
 			`Unsupported provider "${provider}". Use openai, openai-codex, anthropic, google, or kimi-coding.`,
 		);
 	}
 
-	const timezone = requiredString(file, "timezone", env.HWM_TIMEZONE, "Asia/Hong_Kong");
+	const timezone = requiredString(file, "timezone", env.FOLKSUM_TIMEZONE, "Asia/Hong_Kong");
 	assertTimezone(timezone);
-	const model = optionalString(file, "model", env.HWM_MODEL);
-	const thinkingLevel = requiredString(file, "thinkingLevel", env.HWM_THINKING_LEVEL, "low");
+	const model = optionalString(file, "model", env.FOLKSUM_MODEL);
+	const thinkingLevel = requiredString(file, "thinkingLevel", env.FOLKSUM_THINKING_LEVEL, "low");
 	if (!isRuntimeThinkingLevel(thinkingLevel)) {
 		throw new ApplicationConfigError(
 			`Unsupported thinking level "${thinkingLevel}". Use ${THINKING_LEVELS.join(", ")}.`,
@@ -124,7 +124,7 @@ export function loadApplicationConfig(options: LoadApplicationConfigOptions = {}
 	const cardTrackingMode = requiredString(
 		file,
 		"cardTrackingMode",
-		env.HWM_CARD_TRACKING_MODE,
+		env.FOLKSUM_CARD_TRACKING_MODE,
 		"lightweight",
 	);
 	if (!isCardTrackingMode(cardTrackingMode)) {
@@ -135,12 +135,12 @@ export function loadApplicationConfig(options: LoadApplicationConfigOptions = {}
 
 	return {
 		configPath,
-		databasePath: requiredString(file, "databasePath", env.HWM_DB_PATH, ".data/wealth.db"),
-		householdName: requiredString(file, "householdName", env.HWM_HOUSEHOLD_NAME, "My Household"),
-		baseCurrency: requiredString(file, "baseCurrency", env.HWM_BASE_CURRENCY, "HKD"),
-		cliIdentity: requiredString(file, "cliIdentity", env.HWM_CLI_IDENTITY, "local-owner"),
-		session: requiredString(file, "session", env.HWM_SESSION, "default"),
-		memberName: requiredString(file, "memberName", env.HWM_MEMBER_NAME, "Local Owner"),
+		databasePath: requiredString(file, "databasePath", env.FOLKSUM_DB_PATH, ".data/wealth.db"),
+		householdName: requiredString(file, "householdName", env.FOLKSUM_HOUSEHOLD_NAME, "My Household"),
+		baseCurrency: requiredString(file, "baseCurrency", env.FOLKSUM_BASE_CURRENCY, "HKD"),
+		cliIdentity: requiredString(file, "cliIdentity", env.FOLKSUM_CLI_IDENTITY, "local-owner"),
+		session: requiredString(file, "session", env.FOLKSUM_SESSION, "default"),
+		memberName: requiredString(file, "memberName", env.FOLKSUM_MEMBER_NAME, "Local Owner"),
 		timezone,
 		provider,
 		...(model ? { model } : {}),

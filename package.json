@@ -1,8 +1,32 @@
 {
-	"name": "home-wealth-agent",
+	"name": "folksum",
 	"version": "0.1.0",
-	"private": true,
+	"description": "Financial Intelligence & Record Engine for local-first household finance",
 	"type": "module",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/rowan-hiro/Home-Wealth-Manager.git"
+	},
+	"homepage": "https://github.com/rowan-hiro/Home-Wealth-Manager#readme",
+	"bugs": {
+		"url": "https://github.com/rowan-hiro/Home-Wealth-Manager/issues"
+	},
+	"keywords": [
+		"finance",
+		"ledger",
+		"sqlite",
+		"tui",
+		"llm"
+	],
+	"bin": {
+		"folksum": "dist/channels/cli.js"
+	},
+	"files": [
+		"dist",
+		"config.example.json",
+		"README.md"
+	],
 	"engines": {
 		"node": ">=22.19.0"
 	},
@@ -16,11 +40,18 @@
 		"typescript": "5.9.3"
 	},
 	"scripts": {
-		"start": "node --experimental-strip-types --experimental-sqlite src/channels/cli.ts tui",
-		"chat": "node --experimental-strip-types --experimental-sqlite src/channels/cli.ts chat",
-		"reminders": "node --experimental-strip-types --experimental-sqlite src/channels/cli.ts reminders",
-		"schedule": "node --experimental-strip-types --experimental-sqlite src/channels/cli.ts schedule",
-		"test": "node --experimental-strip-types --experimental-sqlite --test test/*.test.ts",
-		"typecheck": "tsc --noEmit"
+		"prebuild": "node scripts/clean-dist.mjs",
+		"build": "tsc -p tsconfig.build.json",
+		"postbuild": "node scripts/prepare-dist.mjs",
+		"prepack": "npm run build",
+		"start": "node dist/channels/cli.js tui",
+		"chat": "node dist/channels/cli.js chat",
+		"reminders": "node dist/channels/cli.js reminders",
+		"schedule": "node dist/channels/cli.js schedule",
+		"dev": "node --experimental-strip-types --experimental-sqlite src/channels/cli.ts tui",
+		"test": "node --experimental-strip-types --experimental-sqlite --test",
+		"typecheck": "tsc --noEmit",
+		"package:verify": "node scripts/verify-package.mjs",
+		"release:verify": "npm run typecheck && npm test && npm run package:verify"
 	}
 }

@@ -82,7 +82,7 @@ const SETTINGS_THEME: SettingsListTheme = {
 	hint: plain,
 };
 
-export interface RunHomeWealthTuiInput {
+export interface RunFolksumTuiInput {
 	wealth: WealthService;
 	identities: SessionIdentityService;
 	scope: IdentityScope;
@@ -137,13 +137,13 @@ export function containsLikelyCredential(text: string): boolean {
 	return /\b(?:sk-(?:ant-|proj-)?[A-Za-z0-9_-]{16,}|AIza[A-Za-z0-9_-]{20,})\b/u.test(text);
 }
 
-export async function runHomeWealthTui(input: RunHomeWealthTuiInput): Promise<void> {
-	const app = new HomeWealthTui(input);
+export async function runFolksumTui(input: RunFolksumTuiInput): Promise<void> {
+	const app = new FolksumTui(input);
 	await app.run();
 }
 
-class HomeWealthTui {
-	private readonly input: RunHomeWealthTuiInput;
+class FolksumTui {
+	private readonly input: RunFolksumTuiInput;
 	private readonly tui: TuiAltScreen;
 	private readonly transcript = new Container();
 	private readonly status = new Text();
@@ -167,7 +167,7 @@ class HomeWealthTui {
 	private shuttingDown = false;
 	private finish: (() => void) | undefined;
 
-	constructor(input: RunHomeWealthTuiInput) {
+	constructor(input: RunFolksumTuiInput) {
 		this.input = input;
 		this.tui = new TuiAltScreen(input.terminal ?? new ProcessTerminal());
 		this.editor = new Editor(this.tui, EDITOR_THEME, { paddingX: 1, autocompleteMaxVisible: 8 });
@@ -182,7 +182,7 @@ class HomeWealthTui {
 		});
 		const root = new VStack(
 			[
-				{ component: new Text("Home Wealth Manager"), basis: "auto", shrink: 0 },
+				{ component: new Text("Folksum · Financial Intelligence & Record Engine"), basis: "auto", shrink: 0 },
 				{ component: this.status, basis: "auto", shrink: 0 },
 				{ component: scroll, basis: 0, grow: 1, minSize: 3 },
 				{

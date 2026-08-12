@@ -71,3 +71,10 @@ The completed adapter imports only published @earendil-works Pi packages under s
 Status: Accepted → Accepted
 
 Confirmed the external Pi boundary after installing and locking the published 0.84.1 packages; strict typechecking and all 26 tests pass, and Pi imports remain isolated under src/runtime/pi.
+
+<!-- driftseal-reconciliation: e540fbc4-638f-44b8-bf14-da01855b82fe -->
+### 2026-08-12T08:48:41.866Z — Intent `2026-08-12-012`
+
+Status: Accepted → Accepted
+
+Confirmed for the release package: TypeScript emits only Home Wealth Agent code, bare published @earendil-works/pi-* imports remain external, npm installs exact Pi runtime dependencies, and package verification rejects bundled or vendored Pi contents.

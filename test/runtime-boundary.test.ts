@@ -2,22 +2,51 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { projectPersistableAgentMessage } from "../src/runtime/pi/runtime.ts";
 import { buildFinanceSystemPrompt } from "../src/runtime/pi/system-prompt.ts";
 
-const projectRoot = new URL("..", import.meta.url).pathname;
+const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 
 test("declares published Pi packages instead of local checkout dependencies", () => {
 	const packageJson = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf8")) as {
+		name?: string;
+		description?: string;
+		private?: boolean;
+		bin?: Record<string, string>;
+		files?: string[];
 		dependencies: Record<string, string>;
+		bundleDependencies?: unknown;
+		bundledDependencies?: unknown;
+		scripts: Record<string, string>;
 	};
+	assert.equal(packageJson.name, "folksum");
+	assert.equal(
+		packageJson.description,
+		"Financial Intelligence & Record Engine for local-first household finance",
+	);
+	assert.equal(packageJson.private, undefined);
+	assert.equal(packageJson.bin?.folksum, "dist/channels/cli.js");
+	assert.deepEqual(packageJson.files, ["dist", "config.example.json", "README.md"]);
+	assert.equal(packageJson.bundleDependencies, undefined);
+	assert.equal(packageJson.bundledDependencies, undefined);
+	assert.equal(packageJson.scripts.start, "node dist/channels/cli.js tui");
+	assert.equal(packageJson.scripts.prepack, "npm run build");
 	assert.equal(packageJson.dependencies["@earendil-works/pi-agent-core"], "0.84.1");
 	assert.equal(packageJson.dependencies["@earendil-works/pi-ai"], "0.84.1");
 	assert.equal(packageJson.dependencies["@earendil-works/pi-tui"], "0.84.1");
 	for (const version of Object.values(packageJson.dependencies)) {
 		assert.doesNotMatch(version, /^(?:file|link):|\/pi\//);
 	}
+
+	const packageLock = JSON.parse(readFileSync(join(projectRoot, "package-lock.json"), "utf8")) as {
+		name?: string;
+		packages?: Record<string, { name?: string; bin?: Record<string, string> }>;
+	};
+	assert.equal(packageLock.name, "folksum");
+	assert.equal(packageLock.packages?.[""]?.name, "folksum");
+	assert.equal(packageLock.packages?.[""]?.bin?.folksum, "dist/channels/cli.js");
 });
 
 test("isolates Pi model imports to the runtime adapter and Pi TUI imports to its channel", () => {

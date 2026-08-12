@@ -9,7 +9,7 @@ import { WealthDatabase } from "../src/core/database.ts";
 import { WealthService } from "../src/core/wealth-service.ts";
 
 test("migrates v6 statements and allocations to lightweight tracking without rewriting the ledger", (context) => {
-	const directory = mkdtempSync(join(tmpdir(), "hwm-migration-"));
+	const directory = mkdtempSync(join(tmpdir(), "folksum-migration-"));
 	const path = join(directory, "wealth.db");
 	context.after(() => rmSync(directory, { recursive: true, force: true }));
 

@@ -8,7 +8,7 @@ import { SessionIdentityService, type SessionMessageRole } from "../../app/sessi
 import type { CardTrackingMode } from "../../core/card-tracking.ts";
 import { FileCredentialStore } from "./credential-store.ts";
 import {
-	createHomeWealthModels,
+	createFolksumModels,
 	type SupportedPiProviderId,
 } from "./models.ts";
 import { PiRuntimeSettingsController } from "./settings.ts";
@@ -196,7 +196,7 @@ function resolveModels(config: PiRuntimeConfig): MutableModels {
 	return (
 		config.models ??
 		config.settingsController?.models ??
-		createHomeWealthModels({ credentials: new FileCredentialStore() })
+		createFolksumModels({ credentials: new FileCredentialStore() })
 	);
 }
 

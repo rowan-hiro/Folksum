@@ -12,14 +12,14 @@ import { ApplicationSettingsController } from "../src/app/settings.ts";
 import {
 	containsLikelyCredential,
 	formatAuthStatus,
-	runHomeWealthTui,
+	runFolksumTui,
 	sanitizeTerminalText,
 	SecretInput,
 } from "../src/channels/tui.ts";
 import { WealthDatabase } from "../src/core/database.ts";
 import { WealthService } from "../src/core/wealth-service.ts";
 import { FileCredentialStore } from "../src/runtime/pi/credential-store.ts";
-import { createHomeWealthModels } from "../src/runtime/pi/models.ts";
+import { createFolksumModels } from "../src/runtime/pi/models.ts";
 import type { PiRuntimeAdapter } from "../src/runtime/pi/runtime.ts";
 import { PiRuntimeSettingsController } from "../src/runtime/pi/settings.ts";
 
@@ -64,7 +64,7 @@ class FakeTerminal implements Terminal {
 }
 
 function createDirectory(context: TestContext): string {
-	const directory = mkdtempSync(join(tmpdir(), "home-wealth-tui-"));
+	const directory = mkdtempSync(join(tmpdir(), "folksum-tui-"));
 	context.after(() => rmSync(directory, { recursive: true, force: true }));
 	return directory;
 }
@@ -116,7 +116,7 @@ test("starts and restores the terminal without requiring model credentials", asy
 	writeFileSync(configPath, "{}\n");
 	const config = loadApplicationConfig({
 		cwd: directory,
-		env: { HWM_CONFIG_PATH: configPath },
+		env: { FOLKSUM_CONFIG_PATH: configPath },
 	});
 	const database = new WealthDatabase(":memory:");
 	context.after(() => database.close());
@@ -134,12 +134,12 @@ test("starts and restores the terminal without requiring model credentials", asy
 		externalId: "owner",
 		conversationKey: "tui-test",
 	});
-	const models = createHomeWealthModels();
+	const models = createFolksumModels();
 	const settingsController = new PiRuntimeSettingsController({ models, config, env: {} });
 	const applicationSettingsController = new ApplicationSettingsController({ config, env: {} });
 	const terminal = new FakeTerminal();
 
-	const running = runHomeWealthTui({
+	const running = runFolksumTui({
 		wealth,
 		identities,
 		scope,
@@ -158,6 +158,7 @@ test("starts and restores the terminal without requiring model credentials", asy
 	assert.equal(terminal.started, true);
 	assert.equal(terminal.drained, true);
 	assert.equal(terminal.stopped, true);
+	assert.match(terminal.output, /Folksum · Financial Intelligence & Record Engine/);
 });
 
 test("keeps settings open while changing runtime and credit-card tracking settings", async (context) => {
@@ -166,7 +167,7 @@ test("keeps settings open while changing runtime and credit-card tracking settin
 	writeFileSync(configPath, "{}\n");
 	const config = loadApplicationConfig({
 		cwd: directory,
-		env: { HWM_CONFIG_PATH: configPath },
+		env: { FOLKSUM_CONFIG_PATH: configPath },
 	});
 	const database = new WealthDatabase(":memory:");
 	context.after(() => database.close());
@@ -184,7 +185,7 @@ test("keeps settings open while changing runtime and credit-card tracking settin
 		externalId: "owner",
 		conversationKey: "persistent-settings-test",
 	});
-	const models = createHomeWealthModels();
+	const models = createFolksumModels();
 	const originalCheckAuth = models.checkAuth.bind(models);
 	let authChecks = 0;
 	models.checkAuth = async (...args) => {
@@ -198,7 +199,7 @@ test("keeps settings open while changing runtime and credit-card tracking settin
 	const applicationSettingsController = new ApplicationSettingsController({ config, env: {} });
 	const terminal = new FakeTerminal();
 
-	const running = runHomeWealthTui({
+	const running = runFolksumTui({
 		wealth,
 		identities,
 		scope,
@@ -283,7 +284,7 @@ test("restores the displayed card mode when an environment override rejects the 
 	writeFileSync(configPath, originalConfig);
 	const config = loadApplicationConfig({
 		cwd: directory,
-		env: { HWM_CONFIG_PATH: configPath },
+		env: { FOLKSUM_CONFIG_PATH: configPath },
 	});
 	const database = new WealthDatabase(":memory:");
 	context.after(() => database.close());
@@ -304,7 +305,7 @@ test("restores the displayed card mode when an environment override rejects the 
 		externalId: "owner",
 		conversationKey: "settings-override-rollback-test",
 	});
-	const models = createHomeWealthModels();
+	const models = createFolksumModels();
 	const originalCheckAuth = models.checkAuth.bind(models);
 	let authChecks = 0;
 	models.checkAuth = async (...args) => {
@@ -317,7 +318,7 @@ test("restores the displayed card mode when an environment override rejects the 
 	const settingsController = new PiRuntimeSettingsController({ models, config, env: {} });
 	const applicationSettingsController = new ApplicationSettingsController({
 		config,
-		env: { HWM_CARD_TRACKING_MODE: "lightweight" },
+		env: { FOLKSUM_CARD_TRACKING_MODE: "lightweight" },
 	});
 	const originalUpdate = applicationSettingsController.update.bind(applicationSettingsController);
 	const attemptedModes: string[] = [];
@@ -327,7 +328,7 @@ test("restores the displayed card mode when an environment override rejects the 
 	};
 	const terminal = new FakeTerminal();
 
-	const running = runHomeWealthTui({
+	const running = runFolksumTui({
 		wealth,
 		identities,
 		scope,
@@ -371,7 +372,7 @@ test("does not start a model prompt while the settings overlay is opening", asyn
 	writeFileSync(configPath, '{"provider":"openai","model":"gpt-4.1"}\n');
 	const config = loadApplicationConfig({
 		cwd: directory,
-		env: { HWM_CONFIG_PATH: configPath },
+		env: { FOLKSUM_CONFIG_PATH: configPath },
 	});
 	const database = new WealthDatabase(":memory:");
 	context.after(() => database.close());
@@ -389,7 +390,7 @@ test("does not start a model prompt while the settings overlay is opening", asyn
 		externalId: "owner",
 		conversationKey: "settings-open-race-test",
 	});
-	const models = createHomeWealthModels();
+	const models = createFolksumModels();
 	const originalCheckAuth = models.checkAuth.bind(models);
 	let blockSettingsAuth = false;
 	let settingsAuthStarted: (() => void) | undefined;
@@ -412,7 +413,7 @@ test("does not start a model prompt while the settings overlay is opening", asyn
 	const terminal = new FakeTerminal();
 	let factoryCalls = 0;
 
-	const running = runHomeWealthTui({
+	const running = runFolksumTui({
 		wealth,
 		identities,
 		scope,
@@ -459,7 +460,7 @@ test("rebuilds the model runtime after changing credit-card tracking mode", asyn
 	);
 	const config = loadApplicationConfig({
 		cwd: directory,
-		env: { HWM_CONFIG_PATH: configPath },
+		env: { FOLKSUM_CONFIG_PATH: configPath },
 	});
 	const database = new WealthDatabase(":memory:");
 	context.after(() => database.close());
@@ -485,7 +486,7 @@ test("rebuilds the model runtime after changing credit-card tracking mode", asyn
 		type: "api_key",
 		key: "test-only-key",
 	}));
-	const models = createHomeWealthModels({ credentials: credentialStore });
+	const models = createFolksumModels({ credentials: credentialStore });
 	const originalCheckAuth = models.checkAuth.bind(models);
 	let authChecks = 0;
 	models.checkAuth = async (...args) => {
@@ -501,7 +502,7 @@ test("rebuilds the model runtime after changing credit-card tracking mode", asyn
 	const runtimeModes: string[] = [];
 	let promptCalls = 0;
 
-	const running = runHomeWealthTui({
+	const running = runFolksumTui({
 		wealth,
 		identities,
 		scope,
@@ -564,7 +565,7 @@ test("occupies the prompt operation before asynchronous runtime setup", async (c
 	writeFileSync(configPath, '{"provider":"openai","model":"gpt-4.1"}\n');
 	const config = loadApplicationConfig({
 		cwd: directory,
-		env: { HWM_CONFIG_PATH: configPath },
+		env: { FOLKSUM_CONFIG_PATH: configPath },
 	});
 	const database = new WealthDatabase(":memory:");
 	context.after(() => database.close());
@@ -587,7 +588,7 @@ test("occupies the prompt operation before asynchronous runtime setup", async (c
 		type: "api_key",
 		key: "test-only-key",
 	}));
-	const models = createHomeWealthModels({ credentials: credentialStore });
+	const models = createFolksumModels({ credentials: credentialStore });
 	const settingsController = new PiRuntimeSettingsController({ models, config, env: {} });
 	const applicationSettingsController = new ApplicationSettingsController({ config, env: {} });
 	const terminal = new FakeTerminal();
@@ -614,7 +615,7 @@ test("occupies the prompt operation before asynchronous runtime setup", async (c
 		reject(): void {},
 	} as unknown as PiRuntimeAdapter;
 
-	const running = runHomeWealthTui({
+	const running = runFolksumTui({
 		wealth,
 		identities,
 		scope,

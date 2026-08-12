@@ -12,7 +12,7 @@ import {
 } from "../src/app/config.ts";
 
 function createDirectory(context: TestContext): string {
-	const directory = mkdtempSync(join(tmpdir(), "home-wealth-config-"));
+	const directory = mkdtempSync(join(tmpdir(), "folksum-config-"));
 	context.after(() => rmSync(directory, { recursive: true, force: true }));
 	return directory;
 }
@@ -35,6 +35,24 @@ test("uses defaults when the default JSON configuration file is absent", (contex
 	});
 });
 
+test("does not read pre-release HWM environment aliases", (context) => {
+	const directory = createDirectory(context);
+	const config = loadApplicationConfig({
+		cwd: directory,
+		env: {
+			HWM_CONFIG_PATH: "old-config.json",
+			HWM_DB_PATH: "old.db",
+			HWM_PROVIDER: "anthropic",
+			HWM_MODEL: "old-model",
+		},
+	});
+
+	assert.equal(config.configPath, join(directory, ".data/config.json"));
+	assert.equal(config.databasePath, ".data/wealth.db");
+	assert.equal(config.provider, "openai");
+	assert.equal(config.model, undefined);
+});
+
 test("loads common settings from a JSON file", (context) => {
 	const directory = createDirectory(context);
 	const path = join(directory, "settings.json");
@@ -55,7 +73,7 @@ test("loads common settings from a JSON file", (context) => {
 		}),
 	);
 
-	const config = loadApplicationConfig({ cwd: directory, env: { HWM_CONFIG_PATH: "settings.json" } });
+	const config = loadApplicationConfig({ cwd: directory, env: { FOLKSUM_CONFIG_PATH: "settings.json" } });
 	assert.deepEqual(config, {
 		configPath: path,
 		databasePath: "data/custom.db",
@@ -95,18 +113,18 @@ test("environment variables override individual JSON settings", (context) => {
 	const config = loadApplicationConfig({
 		cwd: directory,
 		env: {
-			HWM_CONFIG_PATH: path,
-			HWM_DB_PATH: "environment.db",
-			HWM_HOUSEHOLD_NAME: "Environment Household",
-			HWM_BASE_CURRENCY: "JPY",
-			HWM_CLI_IDENTITY: "environment-owner",
-			HWM_SESSION: "environment-session",
-			HWM_MEMBER_NAME: "Environment Member",
-			HWM_TIMEZONE: "Asia/Tokyo",
-			HWM_PROVIDER: "google",
-			HWM_MODEL: "environment-model",
-			HWM_THINKING_LEVEL: "xhigh",
-			HWM_CARD_TRACKING_MODE: "integrated",
+			FOLKSUM_CONFIG_PATH: path,
+			FOLKSUM_DB_PATH: "environment.db",
+			FOLKSUM_HOUSEHOLD_NAME: "Environment Household",
+			FOLKSUM_BASE_CURRENCY: "JPY",
+			FOLKSUM_CLI_IDENTITY: "environment-owner",
+			FOLKSUM_SESSION: "environment-session",
+			FOLKSUM_MEMBER_NAME: "Environment Member",
+			FOLKSUM_TIMEZONE: "Asia/Tokyo",
+			FOLKSUM_PROVIDER: "google",
+			FOLKSUM_MODEL: "environment-model",
+			FOLKSUM_THINKING_LEVEL: "xhigh",
+			FOLKSUM_CARD_TRACKING_MODE: "integrated",
 		},
 	});
 
@@ -167,26 +185,26 @@ test("rejects writable settings that are overridden by environment variables", (
 	writeFileSync(path, JSON.stringify({ provider: "openai", model: "gpt-4.1" }));
 
 	assert.throws(
-		() => patchApplicationConfig(path, { provider: "google" }, { env: { HWM_PROVIDER: "openai" } }),
-		/HWM_PROVIDER/,
+		() => patchApplicationConfig(path, { provider: "google" }, { env: { FOLKSUM_PROVIDER: "openai" } }),
+		/FOLKSUM_PROVIDER/,
 	);
 	assert.throws(
 		() =>
 			patchApplicationConfig(
 				path,
 				{ thinkingLevel: "high" },
-				{ env: { HWM_THINKING_LEVEL: "low" } },
+				{ env: { FOLKSUM_THINKING_LEVEL: "low" } },
 			),
-		/HWM_THINKING_LEVEL/,
+		/FOLKSUM_THINKING_LEVEL/,
 	);
 	assert.throws(
 		() =>
 			patchApplicationConfig(
 				path,
 				{ cardTrackingMode: "integrated" },
-				{ env: { HWM_CARD_TRACKING_MODE: "lightweight" } },
+				{ env: { FOLKSUM_CARD_TRACKING_MODE: "lightweight" } },
 			),
-		/HWM_CARD_TRACKING_MODE/,
+		/FOLKSUM_CARD_TRACKING_MODE/,
 	);
 	assert.throws(
 		() =>
@@ -206,35 +224,35 @@ test("rejects writable settings that are overridden by environment variables", (
 test("rejects missing explicit files and invalid JSON settings", (context) => {
 	const directory = createDirectory(context);
 	assert.throws(
-		() => loadApplicationConfig({ cwd: directory, env: { HWM_CONFIG_PATH: "missing.json" } }),
+		() => loadApplicationConfig({ cwd: directory, env: { FOLKSUM_CONFIG_PATH: "missing.json" } }),
 		ApplicationConfigError,
 	);
 
 	const path = join(directory, "invalid.json");
 	writeFileSync(path, JSON.stringify({ provider: "openai-codex", thinkingLevel: "max" }));
-	const codexConfig = loadApplicationConfig({ cwd: directory, env: { HWM_CONFIG_PATH: path } });
+	const codexConfig = loadApplicationConfig({ cwd: directory, env: { FOLKSUM_CONFIG_PATH: path } });
 	assert.equal(codexConfig.provider, "openai-codex");
 	assert.equal(codexConfig.thinkingLevel, "max");
 
 	writeFileSync(path, JSON.stringify({ provider: "kimi-coding" }));
-	const kimiConfig = loadApplicationConfig({ cwd: directory, env: { HWM_CONFIG_PATH: path } });
+	const kimiConfig = loadApplicationConfig({ cwd: directory, env: { FOLKSUM_CONFIG_PATH: path } });
 	assert.equal(kimiConfig.provider, "kimi-coding");
 
 	writeFileSync(path, JSON.stringify({ provider: "unknown" }));
 	assert.throws(
-		() => loadApplicationConfig({ cwd: directory, env: { HWM_CONFIG_PATH: path } }),
+		() => loadApplicationConfig({ cwd: directory, env: { FOLKSUM_CONFIG_PATH: path } }),
 		/Unsupported provider/,
 	);
 
 	writeFileSync(path, JSON.stringify({ thinkingLevel: "extreme" }));
 	assert.throws(
-		() => loadApplicationConfig({ cwd: directory, env: { HWM_CONFIG_PATH: path } }),
+		() => loadApplicationConfig({ cwd: directory, env: { FOLKSUM_CONFIG_PATH: path } }),
 		/Unsupported thinking level/,
 	);
 
 	writeFileSync(path, JSON.stringify({ cardTrackingMode: "automatic" }));
 	assert.throws(
-		() => loadApplicationConfig({ cwd: directory, env: { HWM_CONFIG_PATH: path } }),
+		() => loadApplicationConfig({ cwd: directory, env: { FOLKSUM_CONFIG_PATH: path } }),
 		/Unsupported credit-card tracking mode/,
 	);
 
@@ -243,7 +261,7 @@ test("rejects missing explicit files and invalid JSON settings", (context) => {
 		() =>
 			loadApplicationConfig({
 				cwd: directory,
-				env: { HWM_CONFIG_PATH: path, HWM_CARD_TRACKING_MODE: "automatic" },
+				env: { FOLKSUM_CONFIG_PATH: path, FOLKSUM_CARD_TRACKING_MODE: "automatic" },
 			}),
 		/Unsupported credit-card tracking mode/,
 	);
@@ -255,13 +273,13 @@ test("rejects missing explicit files and invalid JSON settings", (context) => {
 
 	writeFileSync(path, "not json");
 	assert.throws(
-		() => loadApplicationConfig({ cwd: directory, env: { HWM_CONFIG_PATH: path } }),
+		() => loadApplicationConfig({ cwd: directory, env: { FOLKSUM_CONFIG_PATH: path } }),
 		/Could not read configuration file/,
 	);
 
 	writeFileSync(path, JSON.stringify({ unexpected: "value" }));
 	assert.throws(
-		() => loadApplicationConfig({ cwd: directory, env: { HWM_CONFIG_PATH: path } }),
+		() => loadApplicationConfig({ cwd: directory, env: { FOLKSUM_CONFIG_PATH: path } }),
 		/Unknown configuration value/,
 	);
 });
@@ -271,9 +289,9 @@ test("the local reminder command runs from JSON configuration without a model or
 	const configPath = join(directory, "config.json");
 	writeFileSync(configPath, JSON.stringify({ databasePath: "wealth.db", baseCurrency: "USD" }));
 	const cleanEnvironment = Object.fromEntries(
-		Object.entries(process.env).filter(([key]) => !key.startsWith("HWM_")),
+		Object.entries(process.env).filter(([key]) => !key.startsWith("FOLKSUM_")),
 	) as NodeJS.ProcessEnv;
-	cleanEnvironment.HWM_CONFIG_PATH = configPath;
+	cleanEnvironment.FOLKSUM_CONFIG_PATH = configPath;
 
 	const result = spawnSync(
 		process.execPath,

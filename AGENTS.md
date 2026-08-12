@@ -2,7 +2,8 @@
 
 ## Project overview
 
-Home Wealth Agent is a local-first, conversational household-finance application.
+Folksum, the Financial Intelligence & Record Engine, is a local-first,
+conversational household-finance application.
 It records expenses, income, transfers, credit-card statements and repayments,
 asset valuations, reminders, and net-worth reports. SQLite is the system of
 record; financial mutations are auditable and use a double-entry ledger.
@@ -49,18 +50,30 @@ surface, and acceptance criteria.
 
 ## Development and build
 
-The project is a private ESM TypeScript package managed with npm. It requires
-Node.js 22.19.0 or newer because it uses the built-in SQLite module and Node's
-TypeScript type-stripping support. Use the committed `package-lock.json` for
-reproducible installs:
+The project is a publishable ESM TypeScript CLI managed with npm. It requires
+Node.js 22.19.0 or newer because it uses the built-in SQLite module. Use the
+committed `package-lock.json` for reproducible source installs:
 
 ```sh
 npm ci
 ```
 
-There is no emitted production bundle. `tsconfig.json` sets `noEmit`, and the CLI
-runs `.ts` sources directly with Node. Treat strict type-checking as the build
-validation step:
+`tsconfig.json` performs development type-checking, while `tsconfig.build.json`
+emits production JavaScript into `dist/` and rewrites relative `.ts` imports to
+`.js`. The build is intentionally not a bundle: published Pi packages remain
+normal runtime dependencies and are never copied into this package.
+
+```sh
+npm run build
+```
+
+Use the source-running development command for rapid local iteration:
+
+```sh
+npm run dev
+```
+
+Run strict type-checking separately with:
 
 ```sh
 npm run typecheck
@@ -73,9 +86,14 @@ npm test
 ```
 
 Before reporting a code change as complete, run both `npm run typecheck` and
-`npm test`. Tests use Node's built-in test runner, TypeScript stripping, and the
-experimental SQLite flag; do not introduce a separate transpiler unless the
-runtime strategy intentionally changes.
+`npm test`. Tests use Node's built-in test runner and TypeScript stripping; the
+production CLI runs emitted JavaScript without type-stripping or SQLite flags.
+
+For release work, run `npm run release:verify`. It builds and packs the project,
+checks the package allowlist, installs the tarball into an isolated temporary
+project, verifies that Pi resolves as an external dependency, and smoke-tests the
+installed CLI. `npm pack` creates the final tarball; never add
+`bundledDependencies`, Pi source, or `node_modules` to it.
 
 ## Running the application
 
@@ -89,8 +107,8 @@ Open settings with `Ctrl+O` or `/settings`. The TUI can select the provider,
 model, thinking level, and credit-card tracking mode, and can run the
 provider-owned API-key or OAuth login flow. Non-secret choices are persisted in
 the JSON configuration file. Provider
-credentials are kept separately in `~/.home-wealth-manager/auth.json`; override
-that location with `HWM_AUTH_PATH` when needed. The credential directory and
+credentials are kept separately in `~/.folksum/auth.json`; override
+that location with `FOLKSUM_AUTH_PATH` when needed. The credential directory and
 file are created with `0700` and `0600` permissions on POSIX systems.
 `kimi-coding` supports both `KIMI_API_KEY` and the Kimi Code subscription
 device-code OAuth flow through this settings screen.
@@ -106,13 +124,13 @@ The legacy line-oriented chat remains available for scripting or basic
 terminals and requires a configured model:
 
 ```sh
-HWM_MODEL=<installed-pi-model-id> npm run chat
+FOLKSUM_MODEL=<installed-pi-model-id> npm run chat
 ```
 
 Common settings are loaded from `.data/config.json` when it exists. Set
-`HWM_CONFIG_PATH` to use another JSON file; a relative path is resolved from the
+`FOLKSUM_CONFIG_PATH` to use another JSON file; a relative path is resolved from the
 process working directory. Copy `config.example.json` to `.data/config.json` as
-a starting point. Every non-secret `HWM_*` setting below overrides the
+a starting point. Every non-secret `FOLKSUM_*` setting below overrides the
 corresponding JSON value. The local-only commands do not require an LLM
 credential:
 
@@ -129,19 +147,19 @@ Runtime configuration, in descending precedence:
 
 | Environment variable | JSON key | Default | Purpose |
 | --- | --- | --- | --- |
-| `HWM_CONFIG_PATH` | none | `.data/config.json` | JSON configuration file path |
-| `HWM_DB_PATH` | `databasePath` | `.data/wealth.db` | SQLite database path |
-| `HWM_HOUSEHOLD_NAME` | `householdName` | `My Household` | Name used when initializing the household |
-| `HWM_BASE_CURRENCY` | `baseCurrency` | `HKD` | Initial household base currency |
-| `HWM_CLI_IDENTITY` | `cliIdentity` | `local-owner` | External identity for the CLI channel |
-| `HWM_SESSION` | `session` | `default` | CLI conversation key |
-| `HWM_MEMBER_NAME` | `memberName` | `Local Owner` | Name used when creating the initial member |
-| `HWM_TIMEZONE` | `timezone` | `Asia/Hong_Kong` | Timezone used for the initial member and reminders |
-| `HWM_CARD_TRACKING_MODE` | `cardTrackingMode` | `lightweight` | Credit-card accounting mode: `lightweight` or `integrated` |
-| `HWM_PROVIDER` | `provider` | `openai` | Pi model provider: `openai`, `openai-codex`, `anthropic`, `google`, or `kimi-coding` |
-| `HWM_MODEL` | `model` | none | Pi model ID; required before sending a chat prompt |
-| `HWM_THINKING_LEVEL` | `thinkingLevel` | `low` | Pi reasoning level from `off` through `max`, subject to model support |
-| `HWM_AUTH_PATH` | none | `~/.home-wealth-manager/auth.json` | User-scoped provider credential file |
+| `FOLKSUM_CONFIG_PATH` | none | `.data/config.json` | JSON configuration file path |
+| `FOLKSUM_DB_PATH` | `databasePath` | `.data/wealth.db` | SQLite database path |
+| `FOLKSUM_HOUSEHOLD_NAME` | `householdName` | `My Household` | Name used when initializing the household |
+| `FOLKSUM_BASE_CURRENCY` | `baseCurrency` | `HKD` | Initial household base currency |
+| `FOLKSUM_CLI_IDENTITY` | `cliIdentity` | `local-owner` | External identity for the CLI channel |
+| `FOLKSUM_SESSION` | `session` | `default` | CLI conversation key |
+| `FOLKSUM_MEMBER_NAME` | `memberName` | `Local Owner` | Name used when creating the initial member |
+| `FOLKSUM_TIMEZONE` | `timezone` | `Asia/Hong_Kong` | Timezone used for the initial member and reminders |
+| `FOLKSUM_CARD_TRACKING_MODE` | `cardTrackingMode` | `lightweight` | Credit-card accounting mode: `lightweight` or `integrated` |
+| `FOLKSUM_PROVIDER` | `provider` | `openai` | Pi model provider: `openai`, `openai-codex`, `anthropic`, `google`, or `kimi-coding` |
+| `FOLKSUM_MODEL` | `model` | none | Pi model ID; required before sending a chat prompt |
+| `FOLKSUM_THINKING_LEVEL` | `thinkingLevel` | `low` | Pi reasoning level from `off` through `max`, subject to model support |
+| `FOLKSUM_AUTH_PATH` | none | `~/.folksum/auth.json` | User-scoped provider credential file |
 
 <!-- driftseal -->
 <!-- driftseal-version: 5 -->

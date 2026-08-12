@@ -7,7 +7,7 @@ import test, { type TestContext } from "node:test";
 import { ApplicationSettingsController } from "../src/app/settings.ts";
 
 function createDirectory(context: TestContext): string {
-	const directory = mkdtempSync(join(tmpdir(), "home-wealth-application-settings-"));
+	const directory = mkdtempSync(join(tmpdir(), "folksum-application-settings-"));
 	context.after(() => rmSync(directory, { recursive: true, force: true }));
 	return directory;
 }
@@ -42,12 +42,12 @@ test("keeps live application settings unchanged when persistence is rejected", a
 	writeFileSync(configPath, original);
 	const controller = new ApplicationSettingsController({
 		config: { configPath, cardTrackingMode: "lightweight" },
-		env: { HWM_CARD_TRACKING_MODE: "lightweight" },
+		env: { FOLKSUM_CARD_TRACKING_MODE: "lightweight" },
 	});
 
 	await assert.rejects(
 		controller.update({ cardTrackingMode: "integrated" }),
-		/HWM_CARD_TRACKING_MODE/,
+		/FOLKSUM_CARD_TRACKING_MODE/,
 	);
 	assert.deepEqual(controller.current(), { cardTrackingMode: "lightweight" });
 	assert.equal(readFileSync(configPath, "utf8"), original);

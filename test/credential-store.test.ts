@@ -20,34 +20,51 @@ import {
 	resolveCredentialPath,
 } from "../src/runtime/pi/credential-store.ts";
 import {
-	createHomeWealthModels,
+	createFolksumModels,
 	DEFAULT_PI_MODELS,
 	getDefaultPiModel,
 	SUPPORTED_PI_PROVIDERS,
 } from "../src/runtime/pi/models.ts";
 
 function createDirectory(context: TestContext): string {
-	const directory = mkdtempSync(join(tmpdir(), "home-wealth-auth-"));
+	const directory = mkdtempSync(join(tmpdir(), "folksum-auth-"));
 	context.after(() => rmSync(directory, { recursive: true, force: true }));
 	return directory;
 }
 
-test("resolves the default auth path and HWM_AUTH_PATH override", (context) => {
+test("resolves the default auth path and FOLKSUM_AUTH_PATH override", (context) => {
 	const directory = createDirectory(context);
 	assert.equal(
 		resolveCredentialPath({ homeDirectory: directory, env: {} }),
-		join(directory, ".home-wealth-manager", "auth.json"),
+		join(directory, ".folksum", "auth.json"),
 	);
 	assert.equal(
-		resolveCredentialPath({ cwd: directory, env: { HWM_AUTH_PATH: "private/credentials.json" } }),
+		resolveCredentialPath({ cwd: directory, env: { FOLKSUM_AUTH_PATH: "private/credentials.json" } }),
 		join(directory, "private", "credentials.json"),
 	);
-	assert.throws(() => resolveCredentialPath({ env: { HWM_AUTH_PATH: " " } }), CredentialStoreError);
+	assert.throws(() => resolveCredentialPath({ env: { FOLKSUM_AUTH_PATH: " " } }), CredentialStoreError);
+});
+
+test("does not read the pre-release HWM auth alias or credential directory", async (context) => {
+	const directory = createDirectory(context);
+	const legacyDirectory = join(directory, ".home-wealth-manager");
+	mkdirSync(legacyDirectory);
+	writeFileSync(
+		join(legacyDirectory, "auth.json"),
+		JSON.stringify({ openai: { type: "api_key", key: "legacy-secret" } }),
+	);
+
+	const path = resolveCredentialPath({
+		homeDirectory: directory,
+		env: { HWM_AUTH_PATH: "legacy-auth.json" },
+	});
+	assert.equal(path, join(directory, ".folksum", "auth.json"));
+	assert.equal(await new FileCredentialStore({ homeDirectory: directory, env: {} }).read("openai"), undefined);
 });
 
 test("persists credentials atomically with private permissions", async (context) => {
 	const directory = createDirectory(context);
-	const authDirectory = join(directory, ".home-wealth-manager");
+	const authDirectory = join(directory, ".folksum");
 	const authPath = join(authDirectory, "auth.json");
 	const store = new FileCredentialStore(authPath);
 
@@ -156,7 +173,7 @@ test("repairs existing auth file permissions before reading secrets", async (con
 test("repairs the default credential directory before reading secrets", async (context) => {
 	if (process.platform === "win32") context.skip("POSIX permission bits are not available on Windows.");
 	const directory = createDirectory(context);
-	const authDirectory = join(directory, ".home-wealth-manager");
+	const authDirectory = join(directory, ".folksum");
 	const authPath = join(authDirectory, "auth.json");
 	mkdirSync(authDirectory, { mode: 0o755 });
 	writeFileSync(authPath, JSON.stringify({ openai: { type: "api_key", key: "old-secret" } }));
@@ -209,7 +226,7 @@ test("does not steal a stale-looking lock from a live process", async (context) 
 });
 
 test("shared model registry installs exactly the supported providers", () => {
-	const models = createHomeWealthModels();
+	const models = createFolksumModels();
 	assert.deepEqual(
 		models.getProviders().map((provider) => provider.id),
 		[...SUPPORTED_PI_PROVIDERS],

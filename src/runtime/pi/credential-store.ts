@@ -20,7 +20,7 @@ import type {
 	CredentialStore,
 } from "@earendil-works/pi-ai";
 
-const DEFAULT_AUTH_DIRECTORY = ".home-wealth-manager";
+const DEFAULT_AUTH_DIRECTORY = ".folksum";
 const DEFAULT_AUTH_FILENAME = "auth.json";
 const DEFAULT_LOCK_TIMEOUT_MS = 5_000;
 const DEFAULT_LOCK_RETRY_MS = 25;
@@ -50,10 +50,10 @@ export class CredentialStoreError extends Error {
 
 export function resolveCredentialPath(options: ResolveCredentialPathOptions = {}): string {
 	const env = options.env ?? process.env;
-	const configuredPath = env.HWM_AUTH_PATH;
+	const configuredPath = env.FOLKSUM_AUTH_PATH;
 	if (configuredPath !== undefined) {
 		if (!configuredPath.trim()) {
-			throw new CredentialStoreError("HWM_AUTH_PATH must not be empty.");
+			throw new CredentialStoreError("FOLKSUM_AUTH_PATH must not be empty.");
 		}
 		return resolve(options.cwd ?? process.cwd(), configuredPath.trim());
 	}
@@ -89,7 +89,7 @@ export class FileCredentialStore implements CredentialStore {
 		this.lockRetryMs = positiveDuration(options.lockRetryMs, DEFAULT_LOCK_RETRY_MS, "lockRetryMs");
 		this.staleLockMs = positiveDuration(options.staleLockMs, DEFAULT_STALE_LOCK_MS, "staleLockMs");
 		this.secureDefaultDirectory =
-			options.path === undefined && (options.env ?? process.env).HWM_AUTH_PATH === undefined;
+			options.path === undefined && (options.env ?? process.env).FOLKSUM_AUTH_PATH === undefined;
 	}
 
 	async read(providerId: string, options?: AuthOperationOptions): Promise<Credential | undefined> {
