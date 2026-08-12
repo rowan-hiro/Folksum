@@ -9,6 +9,12 @@ import {
 import { randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 
+import {
+	CARD_TRACKING_MODES,
+	isCardTrackingMode,
+	type CardTrackingMode,
+} from "../core/card-tracking.ts";
+
 const DEFAULT_CONFIG_PATH = ".data/config.json";
 const FILE_KEYS = new Set([
 	"databasePath",
@@ -21,12 +27,14 @@ const FILE_KEYS = new Set([
 	"provider",
 	"model",
 	"thinkingLevel",
+	"cardTrackingMode",
 ]);
 
-const RUNTIME_SETTING_ENVIRONMENT_VARIABLES = {
+const WRITABLE_SETTING_ENVIRONMENT_VARIABLES = {
 	provider: "HWM_PROVIDER",
 	model: "HWM_MODEL",
 	thinkingLevel: "HWM_THINKING_LEVEL",
+	cardTrackingMode: "HWM_CARD_TRACKING_MODE",
 } as const;
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -38,13 +46,19 @@ export type ModelProviderId =
 	| "google"
 	| "kimi-coding";
 export type RuntimeThinkingLevel = (typeof THINKING_LEVELS)[number];
-export type WritableRuntimeSettingKey = keyof typeof RUNTIME_SETTING_ENVIRONMENT_VARIABLES;
+export type WritableApplicationSettingKey = keyof typeof WRITABLE_SETTING_ENVIRONMENT_VARIABLES;
 
 export interface RuntimeSettingsPatch {
 	provider?: ModelProviderId;
 	model?: string | null;
 	thinkingLevel?: RuntimeThinkingLevel;
 }
+
+export interface ApplicationSettingsPatch {
+	cardTrackingMode?: CardTrackingMode;
+}
+
+export type ApplicationConfigPatch = RuntimeSettingsPatch & ApplicationSettingsPatch;
 
 export interface ApplicationConfig {
 	configPath: string;
@@ -58,6 +72,7 @@ export interface ApplicationConfig {
 	provider: ModelProviderId;
 	model?: string;
 	thinkingLevel: RuntimeThinkingLevel;
+	cardTrackingMode: CardTrackingMode;
 }
 
 export interface LoadApplicationConfigOptions {
@@ -106,6 +121,17 @@ export function loadApplicationConfig(options: LoadApplicationConfigOptions = {}
 			`Unsupported thinking level "${thinkingLevel}". Use ${THINKING_LEVELS.join(", ")}.`,
 		);
 	}
+	const cardTrackingMode = requiredString(
+		file,
+		"cardTrackingMode",
+		env.HWM_CARD_TRACKING_MODE,
+		"lightweight",
+	);
+	if (!isCardTrackingMode(cardTrackingMode)) {
+		throw new ApplicationConfigError(
+			`Unsupported credit-card tracking mode "${cardTrackingMode}". Use ${CARD_TRACKING_MODES.join(", ")}.`,
+		);
+	}
 
 	return {
 		configPath,
@@ -119,27 +145,28 @@ export function loadApplicationConfig(options: LoadApplicationConfigOptions = {}
 		provider,
 		...(model ? { model } : {}),
 		thinkingLevel,
+		cardTrackingMode,
 	};
 }
 
 export function patchApplicationConfig(
 	configPath: string,
-	patch: RuntimeSettingsPatch,
+	patch: ApplicationConfigPatch,
 	options: PatchApplicationConfigOptions = {},
 ): void {
 	const env = options.env ?? process.env;
 	const patchRecord = patch as Record<string, unknown>;
 	const keys = Object.keys(patchRecord);
 	if (keys.length === 0) {
-		throw new ApplicationConfigError("At least one runtime setting must be provided.");
+		throw new ApplicationConfigError("At least one writable setting must be provided.");
 	}
 
 	for (const key of keys) {
-		if (!(key in RUNTIME_SETTING_ENVIRONMENT_VARIABLES)) {
+		if (!(key in WRITABLE_SETTING_ENVIRONMENT_VARIABLES)) {
 			throw new ApplicationConfigError(`Configuration value "${key}" cannot be changed at runtime.`);
 		}
 		const environmentName =
-			RUNTIME_SETTING_ENVIRONMENT_VARIABLES[key as WritableRuntimeSettingKey];
+			WRITABLE_SETTING_ENVIRONMENT_VARIABLES[key as WritableApplicationSettingKey];
 		if (env[environmentName] !== undefined) {
 			throw new ApplicationConfigError(
 				`Configuration value "${key}" is overridden by ${environmentName} and cannot be changed in the JSON file.`,
@@ -147,9 +174,9 @@ export function patchApplicationConfig(
 		}
 	}
 
-	validateRuntimeSettingsPatch(patchRecord);
+	validateApplicationConfigPatch(patchRecord);
 	const file = readConfigFile(configPath, false);
-	for (const key of keys as WritableRuntimeSettingKey[]) {
+	for (const key of keys as WritableApplicationSettingKey[]) {
 		const value = patchRecord[key];
 		if (key === "model" && value === null) {
 			delete file.model;
@@ -219,7 +246,7 @@ export function isRuntimeThinkingLevel(value: string): value is RuntimeThinkingL
 	return THINKING_LEVELS.some((level) => level === value);
 }
 
-function validateRuntimeSettingsPatch(patch: Record<string, unknown>): void {
+function validateApplicationConfigPatch(patch: Record<string, unknown>): void {
 	if ("provider" in patch && (typeof patch.provider !== "string" || !isModelProvider(patch.provider))) {
 		throw new ApplicationConfigError(
 			`Unsupported provider "${String(patch.provider)}". Use openai, openai-codex, anthropic, google, or kimi-coding.`,
@@ -238,6 +265,14 @@ function validateRuntimeSettingsPatch(patch: Record<string, unknown>): void {
 	) {
 		throw new ApplicationConfigError(
 			`Unsupported thinking level "${String(patch.thinkingLevel)}". Use ${THINKING_LEVELS.join(", ")}.`,
+		);
+	}
+	if (
+		"cardTrackingMode" in patch &&
+		(typeof patch.cardTrackingMode !== "string" || !isCardTrackingMode(patch.cardTrackingMode))
+	) {
+		throw new ApplicationConfigError(
+			`Unsupported credit-card tracking mode "${String(patch.cardTrackingMode)}". Use ${CARD_TRACKING_MODES.join(", ")}.`,
 		);
 	}
 }

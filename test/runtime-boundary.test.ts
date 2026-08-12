@@ -4,6 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { projectPersistableAgentMessage } from "../src/runtime/pi/runtime.ts";
+import { buildFinanceSystemPrompt } from "../src/runtime/pi/system-prompt.ts";
 
 const projectRoot = new URL("..", import.meta.url).pathname;
 
@@ -58,6 +59,25 @@ test("exposes the documented finance tool surface through the Pi adapter", () =>
 	];
 	for (const tool of expectedTools) assert.match(source, new RegExp(`name: ["']${tool}["']`));
 	assert.doesNotMatch(source, /name: ["'](?:bash|read|write|edit)["']/);
+});
+
+test("tells the model the active card mode without granting settings authority", () => {
+	const scope = {
+		householdId: "household-1",
+		actorId: "member-1",
+		sessionId: "session-1",
+		channel: "cli" as const,
+		role: "owner" as const,
+		timezone: "Asia/Hong_Kong",
+	};
+	const lightweight = buildFinanceSystemPrompt(scope, "2026-08-12", "lightweight");
+	const integrated = buildFinanceSystemPrompt(scope, "2026-08-12", "integrated");
+
+	assert.match(lightweight, /credit-card tracking mode: lightweight/);
+	assert.match(lightweight, /statements and repayments are standalone reminders/);
+	assert.match(integrated, /credit-card tracking mode: integrated/);
+	assert.match(integrated, /card purchases and statement repayments use ledger accounts/);
+	assert.match(lightweight, /update_runtime_settings only.*provider, model, or thinking level/);
 });
 
 test("projects provider messages onto a persistence-safe allowlist", () => {

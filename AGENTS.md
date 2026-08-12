@@ -20,6 +20,9 @@ Important product constraints:
 - Balance every transaction within one currency and never combine currencies
   without an explicit exchange-rate source and valuation time.
 - Correct posted transactions by reversal instead of deletion.
+- Treat credit-card tracking modes as distinct accounting boundaries. Lightweight
+  statements and repayments never mutate the ledger; integrated card activity
+  does, and an existing statement keeps the mode captured when it was created.
 - Keep data local by default and do not place provider credentials in SQLite.
 - Reminders do not initiate payments. Bank connections, trading, tax
   calculation, and personalized investment advice are outside the MVP.
@@ -83,8 +86,9 @@ npm start
 ```
 
 Open settings with `Ctrl+O` or `/settings`. The TUI can select the provider,
-model, and thinking level, and can run the provider-owned API-key or OAuth login
-flow. Non-secret choices are persisted in the JSON configuration file. Provider
+model, thinking level, and credit-card tracking mode, and can run the
+provider-owned API-key or OAuth login flow. Non-secret choices are persisted in
+the JSON configuration file. Provider
 credentials are kept separately in `~/.home-wealth-manager/auth.json`; override
 that location with `HWM_AUTH_PATH` when needed. The credential directory and
 file are created with `0700` and `0600` permissions on POSIX systems.
@@ -92,9 +96,11 @@ file are created with `0700` and `0600` permissions on POSIX systems.
 device-code OAuth flow through this settings screen.
 
 The model may update only provider, model, and thinking level through the
-`update_runtime_settings` tool. Credentials must never be pasted into chat or
-exposed to the model; configure them through the local TUI login flow. Existing
-provider credential environment variables remain supported by `pi-ai`.
+`update_runtime_settings` tool. Credit-card tracking mode and credentials are
+local-only settings: the model can observe the active accounting behavior but
+cannot change it. Credentials must never be pasted into chat or exposed to the
+model; configure them through the local TUI login flow. Existing provider
+credential environment variables remain supported by `pi-ai`.
 
 The legacy line-oriented chat remains available for scripting or basic
 terminals and requires a configured model:
@@ -131,6 +137,7 @@ Runtime configuration, in descending precedence:
 | `HWM_SESSION` | `session` | `default` | CLI conversation key |
 | `HWM_MEMBER_NAME` | `memberName` | `Local Owner` | Name used when creating the initial member |
 | `HWM_TIMEZONE` | `timezone` | `Asia/Hong_Kong` | Timezone used for the initial member and reminders |
+| `HWM_CARD_TRACKING_MODE` | `cardTrackingMode` | `lightweight` | Credit-card accounting mode: `lightweight` or `integrated` |
 | `HWM_PROVIDER` | `provider` | `openai` | Pi model provider: `openai`, `openai-codex`, `anthropic`, `google`, or `kimi-coding` |
 | `HWM_MODEL` | `model` | none | Pi model ID; required before sending a chat prompt |
 | `HWM_THINKING_LEVEL` | `thinkingLevel` | `low` | Pi reasoning level from `off` through `max`, subject to model support |

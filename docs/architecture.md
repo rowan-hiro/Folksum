@@ -189,7 +189,7 @@ Salary received
   Bank asset          +2,000,000
   Salary income       -2,000,000
 
-Credit-card repayment
+Credit-card repayment (integrated mode)
   Credit-card liability +120,000
   Bank asset            -120,000
 ```
@@ -208,13 +208,13 @@ one currency. A currency conversion is represented as two linked balanced
 transactions plus explicit rate metadata; conversion entry is outside the MVP.
 Net-worth and spending reports return a map keyed by currency.
 
-### 4.4 Planned SQLite ledger integrity boundary (schema version 7)
+### 4.4 Planned SQLite ledger integrity boundary (schema version 8)
 
 This section is the target design for the next schema migration, not a description
-of schema version 6. Version 6 validates transaction balance in `WealthService`
+of schema version 7. Version 7 validates transaction balance in `WealthService`
 and relies on the absence of mutation APIs for immutability, while SQLite only
 checks posting amount, foreign-key existence, and account household/currency
-during posting insertion. Version 7 moves the irreducible ledger invariants into
+during posting insertion. Version 8 moves the irreducible ledger invariants into
 SQLite as a second line of defense against application bugs and accidental direct
 SQL.
 
@@ -238,7 +238,7 @@ instead of falling back to an approximate floating-point total.
 
 #### 4.4.1 Schema shape and write protocol
 
-Version 7 will denormalize `household_id` and `currency` onto `postings` and use
+Version 8 will denormalize `household_id` and `currency` onto `postings` and use
 composite foreign keys to bind those values to both parents:
 
 ```text
@@ -281,12 +281,12 @@ relationships remain unchanged.
 
 #### 4.4.2 Migration and failure policy
 
-The version 6 to 7 migration runs as one transaction and fails closed. Before
+The version 7 to 8 migration runs as one transaction and fails closed. Before
 changing the schema it checks every existing transaction for posting count,
 integer balance, parent existence, household equality, and currency equality.
 Invalid historical data is never repaired, rounded, deleted, or balanced with a
 synthetic posting; the migration reports the violated invariant and leaves the
-database at version 6.
+database at version 7.
 
 The migration rebuilds `postings` to add the deferred composite key and new
 columns, but avoids rebuilding `transactions`, which is already referenced by
@@ -299,10 +299,10 @@ continue to enable `PRAGMA foreign_keys = ON` for its connection.
 
 Automated acceptance tests must prove:
 
-- a valid version 6 file containing ordinary entries, a reversal, and an
+- a valid version 7 file containing ordinary entries, a reversal, and an
   allocated card payment migrates without changing identifiers, balances,
   posting order, or payment links;
-- an unbalanced, underspecified, orphaned, or cross-household/currency version 6
+- an unbalanced, underspecified, orphaned, or cross-household/currency version 7
   database fails migration without changing its schema version or contents;
 - direct SQL cannot commit an orphan, a zero- or one-posting transaction, an
   unbalanced entry, a cross-scope entry, or a posting appended to a published
@@ -322,16 +322,50 @@ database file, disable foreign-key enforcement, or drop schema triggers.
 
 ## 5. Credit-card statements and reminders
 
-A credit card is a liability account with statement settings. A statement stores:
+A credit card has an account for identity and currency, plus statement settings.
+The local `cardTrackingMode` application setting chooses how new card activity is
+recorded. Its default is `lightweight`; the TUI can switch it to `integrated`, and
+`HWM_CARD_TRACKING_MODE` may override the JSON file. The setting is local-only and
+is not exposed through the model's runtime-settings tool.
+
+Each statement snapshots the active accounting mode when it is created. Changing
+the setting affects new statements and new unallocated activity, but never
+rewrites an existing statement or infers historical postings from its aggregate
+amount. This prevents one statement from mixing accounting semantics across a
+settings change.
+
+| Behavior | `lightweight` | `integrated` |
+| --- | --- | --- |
+| Everyday card purchases | Not entered against the card ledger; daily bookkeeping stays separate | Post expense debit and card-liability credit |
+| Statement | Aggregate obligation and reminder source | Reconciliation and reminder source; never an additional ledger balance |
+| Repayment | Standalone statement allocation; optional funding-account metadata; no ledger mutation | Atomic bank-to-card ledger transaction and statement allocation |
+| Spending and net worth | Read ledger only; standalone statement totals are shown only as obligations | Read ledger only; statement totals are not counted again |
+
+Lightweight mode rejects a credit card as the funding account for an everyday
+expense and rejects a credit-card opening ledger balance. Integrated mode requires
+the card purchases to exist in the ledger before their repayments: a payment that
+would make the card liability positive fails without a partial allocation. Generic
+transfers involving a credit-card account are rejected in both modes so repayments
+cannot bypass statement allocation.
+
+A statement stores:
 
 - statement period and statement date;
 - due date and timezone;
-- statement amount and minimum payment in minor units; and
-- payments linked to ledger transactions.
+- statement amount and minimum payment in minor units;
+- its immutable accounting-mode snapshot; and
+- either standalone repayment allocations or allocations linked to ledger
+  transactions, according to that snapshot.
 
-Outstanding amount is derived as `statement amount - linked payments`; status is
+Outstanding amount is derived as `statement amount - allocated payments`; status is
 derived as `open`, `due_soon`, `paid`, or `overdue`. It is not trusted as mutable
 source data.
+
+The version 6 to 7 migration snapshots legacy statements as `lightweight` because
+their aggregate totals may not have corresponding card-purchase postings. Existing
+payment allocations are copied into standalone payment records, while their
+historical ledger transactions remain unchanged. This preserves balances and
+idempotent retries without treating incomplete legacy ledgers as reconciled.
 
 The default reminder policy emits reminders 7, 3, and 1 day before the due date,
 on the due date, and once per day while overdue. A delivery record deduplicates a
@@ -341,9 +375,10 @@ surfaces:
 - display due reminders whenever the interactive CLI starts; and
 - a non-interactive command suitable for cron or a future notification adapter.
 
-Recording a repayment creates a balanced ledger transaction and links its amount
-to the statement atomically. The application rejects over-allocation and currency
-mismatches.
+Recording a repayment and its allocation is atomic in both modes. The application
+rejects over-allocation, idempotency conflicts, and currency mismatches. Switching
+modes preserves all historical ledger entries and standalone obligations; reports
+must label the two views and never combine them in a way that double counts debt.
 
 ## 6. Asset management and net worth
 
@@ -368,13 +403,13 @@ prices, and automatic price feeds are later extensions.
 | --- | --- | --- |
 | `create_account` | yes | Create an asset, liability, income, expense, or equity account |
 | `list_accounts` | no | Resolve account names and show balances |
-| `record_expense` | yes | Post an expense paid from an asset or charged to a card |
+| `record_expense` | yes | Post an asset-funded expense, or an integrated-mode card expense |
 | `record_income` | yes | Post income received into an asset account |
 | `record_transfer` | yes | Move value between compatible asset/liability accounts |
 | `reverse_transaction` | yes | Correct a posted transaction without erasing history |
 | `list_transactions` | no | Review recent activity and resolve correction targets |
 | `record_card_statement` | yes | Register a card statement and due date |
-| `record_card_payment` | yes | Post and allocate a repayment |
+| `record_card_payment` | yes | Allocate a standalone repayment, or post and allocate it in integrated mode |
 | `list_card_reminders` | no | Return due-soon and overdue statements |
 | `register_asset` | yes | Mark a non-cash asset account for valuation tracking |
 | `record_asset_valuation` | yes | Store a dated total valuation |
@@ -396,10 +431,12 @@ The system prompt requires the agent to:
 - explain that a reminder is not a completed payment; and
 - avoid presenting reports as financial, tax, or legal advice.
 
-A clear request such as "Lunch was HKD 38 on my Visa today" may be recorded
-without a second confirmation. Destructive correction uses a reversal, and all
-future external side effects such as bank payment require explicit confirmation
-outside the LLM conversation.
+In integrated mode, a clear request such as "Lunch was HKD 38 on my Visa today"
+may be recorded without a second confirmation. In lightweight mode the agent keeps
+that daily entry separate from the card obligation and must not post it to the card
+ledger. Destructive correction uses a reversal, and all future external side
+effects such as bank payment require explicit confirmation outside the LLM
+conversation.
 
 ## 9. Storage and privacy
 
@@ -408,7 +445,9 @@ monotonic and execute in transactions. Non-secret runtime settings are stored in
 the local JSON configuration file, with environment variables taking precedence.
 The TUI and an allow-listed model tool can update provider, model, and thinking
 level; changes are validated against the installed Pi catalog before an atomic
-JSON replacement.
+JSON replacement. The TUI can also update `cardTrackingMode`, but that application
+setting is handled by a separate local controller and is never readable or
+writable through the model tool.
 
 The database and non-secret JSON configuration contain no LLM credentials.
 Provider API keys and OAuth tokens use the `pi-ai` credential schema in
@@ -433,7 +472,8 @@ deployment hardening.
 ## 10. Failure and safety behavior
 
 - A ledger write and all of its postings commit atomically.
-- A statement payment and its allocation commit atomically.
+- An integrated statement payment, its ledger transaction, and its allocation
+  commit atomically; a lightweight payment commits only its standalone allocation.
 - Validation failures do not partially mutate data.
 - The reminder runner is safe to invoke repeatedly.
 - Missing or stale valuations produce warnings, not fabricated estimates.
@@ -448,7 +488,9 @@ The first runnable version is complete when automated tests prove that:
 
 1. expense, income, transfer, and reversal transactions remain balanced;
 2. duplicate idempotency keys do not duplicate transactions;
-3. card payments reduce the correct statement and cannot be over-allocated;
+3. both card-tracking modes persist across restart, retain a statement-level mode
+   snapshot, reduce the correct statement without over-allocation, and never
+   double count ledger balances;
 4. reminder boundaries distinguish future, due-today, paid, and overdue bills;
 5. net worth uses the latest eligible asset valuation and stays separated by
    currency;

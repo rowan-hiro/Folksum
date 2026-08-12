@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 
 export class WealthDatabase {
 	readonly connection: DatabaseSync;
@@ -297,6 +297,159 @@ export class WealthDatabase {
 					ON notification_outbox(status, available_at, channel);
 
 				PRAGMA user_version = 6;
+				COMMIT;
+			`);
+			version = 6;
+		}
+
+		if (version < 7) {
+			this.connection.exec(`
+				BEGIN;
+
+				ALTER TABLE credit_card_statements
+					ADD COLUMN accounting_mode TEXT NOT NULL DEFAULT 'lightweight'
+					CHECK (accounting_mode IN ('lightweight', 'integrated'));
+
+				CREATE TABLE standalone_statement_payments (
+					id TEXT PRIMARY KEY,
+					household_id TEXT NOT NULL REFERENCES households(id) ON DELETE RESTRICT,
+					statement_id TEXT NOT NULL REFERENCES credit_card_statements(id) ON DELETE RESTRICT,
+					funding_account_id TEXT REFERENCES accounts(id) ON DELETE RESTRICT,
+					amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+					occurred_at TEXT NOT NULL,
+					idempotency_key TEXT,
+					created_at TEXT NOT NULL,
+					UNIQUE (household_id, idempotency_key)
+				) STRICT;
+
+				CREATE INDEX standalone_statement_payments_statement_idx
+					ON standalone_statement_payments(statement_id);
+				CREATE INDEX standalone_statement_payments_funding_idx
+					ON standalone_statement_payments(funding_account_id);
+
+				INSERT INTO standalone_statement_payments
+					(id, household_id, statement_id, funding_account_id, amount_minor,
+					 occurred_at, idempotency_key, created_at)
+				SELECT sp.id, card.household_id, sp.statement_id,
+					(
+						SELECT p.account_id
+						FROM postings AS p
+						JOIN accounts AS funding ON funding.id = p.account_id
+						WHERE p.transaction_id = sp.transaction_id
+							AND funding.household_id = card.household_id
+							AND funding.type = 'asset'
+							AND funding.currency = s.currency
+							AND p.amount_minor = -sp.amount_minor
+						ORDER BY p.rowid
+						LIMIT 1
+					),
+					sp.amount_minor, t.occurred_at, t.idempotency_key, sp.created_at
+				FROM statement_payments AS sp
+				JOIN credit_card_statements AS s ON s.id = sp.statement_id
+				JOIN accounts AS card ON card.id = s.card_account_id
+				JOIN transactions AS t ON t.id = sp.transaction_id;
+
+				CREATE TRIGGER standalone_statement_payments_match_statement
+				BEFORE INSERT ON standalone_statement_payments
+				WHEN NOT EXISTS (
+					SELECT 1
+					FROM credit_card_statements AS s
+					JOIN accounts AS card ON card.id = s.card_account_id
+					WHERE s.id = NEW.statement_id
+						AND s.accounting_mode = 'lightweight'
+						AND card.household_id = NEW.household_id
+						AND (
+							NEW.funding_account_id IS NULL
+							OR EXISTS (
+								SELECT 1
+								FROM accounts AS funding
+								WHERE funding.id = NEW.funding_account_id
+									AND funding.household_id = NEW.household_id
+									AND funding.type = 'asset'
+									AND funding.currency = s.currency
+							)
+						)
+				)
+				BEGIN
+					SELECT RAISE(ABORT, 'Standalone payment must match a lightweight statement and its household');
+				END;
+
+				CREATE TRIGGER statement_payments_match_integrated_statement
+				BEFORE INSERT ON statement_payments
+				WHEN NOT EXISTS (
+					SELECT 1
+					FROM credit_card_statements AS s
+					JOIN accounts AS card ON card.id = s.card_account_id
+					JOIN transactions AS payment_transaction ON payment_transaction.id = NEW.transaction_id
+					WHERE s.id = NEW.statement_id
+						AND s.accounting_mode = 'integrated'
+						AND payment_transaction.household_id = card.household_id
+						AND payment_transaction.currency = s.currency
+				)
+				BEGIN
+					SELECT RAISE(ABORT, 'Ledger payment allocation requires an integrated statement');
+				END;
+
+				CREATE TRIGGER transactions_reject_standalone_idempotency
+				BEFORE INSERT ON transactions
+				WHEN NEW.idempotency_key IS NOT NULL AND EXISTS (
+					SELECT 1
+					FROM standalone_statement_payments AS ssp
+					WHERE ssp.household_id = NEW.household_id
+						AND ssp.idempotency_key = NEW.idempotency_key
+				)
+				BEGIN
+					SELECT RAISE(ABORT, 'Idempotency key belongs to a standalone card payment');
+				END;
+
+				CREATE TRIGGER transaction_updates_reject_standalone_idempotency
+				BEFORE UPDATE OF household_id, idempotency_key ON transactions
+				WHEN (NEW.household_id != OLD.household_id OR NEW.idempotency_key IS NOT OLD.idempotency_key)
+					AND NEW.idempotency_key IS NOT NULL
+					AND EXISTS (
+						SELECT 1
+						FROM standalone_statement_payments AS ssp
+						WHERE ssp.household_id = NEW.household_id
+							AND ssp.idempotency_key = NEW.idempotency_key
+					)
+				BEGIN
+					SELECT RAISE(ABORT, 'Idempotency key belongs to a standalone card payment');
+				END;
+
+				CREATE TRIGGER standalone_payments_reject_transaction_idempotency
+				BEFORE INSERT ON standalone_statement_payments
+				WHEN NEW.idempotency_key IS NOT NULL AND EXISTS (
+					SELECT 1
+					FROM transactions AS t
+					WHERE t.household_id = NEW.household_id
+						AND t.idempotency_key = NEW.idempotency_key
+				)
+				BEGIN
+					SELECT RAISE(ABORT, 'Idempotency key belongs to a ledger transaction');
+				END;
+
+				CREATE TRIGGER standalone_payment_updates_reject_transaction_idempotency
+				BEFORE UPDATE OF household_id, idempotency_key ON standalone_statement_payments
+				WHEN (NEW.household_id != OLD.household_id OR NEW.idempotency_key IS NOT OLD.idempotency_key)
+					AND NEW.idempotency_key IS NOT NULL
+					AND EXISTS (
+						SELECT 1
+						FROM transactions AS t
+						WHERE t.household_id = NEW.household_id
+							AND t.idempotency_key = NEW.idempotency_key
+					)
+				BEGIN
+					SELECT RAISE(ABORT, 'Idempotency key belongs to a ledger transaction');
+				END;
+
+				CREATE TRIGGER card_statement_accounting_mode_immutable
+				BEFORE UPDATE OF accounting_mode ON credit_card_statements
+				WHEN NEW.accounting_mode != OLD.accounting_mode
+				BEGIN
+					SELECT RAISE(ABORT, 'Card statement accounting mode is immutable');
+				END;
+
+				PRAGMA user_version = 7;
 				COMMIT;
 			`);
 		}

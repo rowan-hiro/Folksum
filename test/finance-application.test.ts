@@ -8,14 +8,14 @@ import type { IdentityScope } from "../src/app/identity.ts";
 import { WealthDatabase } from "../src/core/database.ts";
 import { WealthService } from "../src/core/wealth-service.ts";
 
-function createFixture(): {
+function createFixture(cardTrackingMode: "lightweight" | "integrated" = "lightweight"): {
 	database: WealthDatabase;
 	wealth: WealthService;
 	application: FinanceApplication;
 	scope: IdentityScope;
 } {
 	const database = new WealthDatabase(":memory:");
-	const wealth = new WealthService(database, { baseCurrency: "HKD" });
+	const wealth = new WealthService(database, { baseCurrency: "HKD", cardTrackingMode });
 	const application = new FinanceApplication(wealth, new ConfirmationStore(database));
 	const scope: IdentityScope = {
 		householdId: wealth.household.id,
@@ -97,11 +97,19 @@ test("binds medium-risk confirmation to identity, session, IR hash, and one-time
 });
 
 test("does not mutate the ledger before high-risk card payment confirmation", (context) => {
-	const { database, wealth, application, scope } = createFixture();
+	const { database, wealth, application, scope } = createFixture("integrated");
 	context.after(() => database.close());
 
 	const bank = wealth.createAccount({ name: "Checking", type: "asset", openingBalance: "100.00" });
 	const card = wealth.createAccount({ name: "Visa", type: "liability", subtype: "credit_card" });
+	const shopping = wealth.createAccount({ name: "Shopping", type: "expense" });
+	wealth.recordExpense({
+		description: "Statement purchases",
+		amount: "50.00",
+		expenseAccountId: shopping.id,
+		fundingAccountId: card.id,
+		occurredAt: "2026-07-31",
+	});
 	const statement = wealth.recordCardStatement({
 		cardAccountId: card.id,
 		periodStart: "2026-07-01",

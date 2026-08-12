@@ -8,6 +8,7 @@ import { FinanceApplication } from "../app/finance-application.ts";
 import { MemoryRuleService } from "../app/memory.ts";
 import { NotificationOutbox, ReminderScheduler } from "../app/scheduler.ts";
 import { IdentityError, SessionIdentityService } from "../app/session.ts";
+import { ApplicationSettingsController } from "../app/settings.ts";
 import { WealthDatabase } from "../core/database.ts";
 import { WealthService } from "../core/wealth-service.ts";
 import { FileCredentialStore } from "../runtime/pi/credential-store.ts";
@@ -22,9 +23,11 @@ const databasePath = resolve(config.databasePath);
 const database = new WealthDatabase(databasePath);
 
 try {
+	const applicationSettingsController = new ApplicationSettingsController({ config });
 	const wealth = new WealthService(database, {
 		householdName: config.householdName,
 		baseCurrency: config.baseCurrency,
+		cardTrackingMode: applicationSettingsController.current().cardTrackingMode,
 	});
 	const identities = new SessionIdentityService(database);
 	const scope = ensureCliIdentity(wealth, identities, config);
@@ -50,6 +53,7 @@ try {
 			config,
 			models,
 			settingsController,
+			applicationSettingsController,
 		});
 	} else if (command === "chat") {
 		printReminders(wealth.listCardReminders({ asOf: today }));
@@ -113,6 +117,7 @@ async function runChat(input: {
 		identityService: input.identities,
 		scope: input.scope,
 		currentDate: input.today,
+		cardTrackingMode: input.wealth.getCardTrackingMode(),
 		thinkingLevel: input.config.thinkingLevel,
 		models: input.models,
 		settingsController: input.settingsController,

@@ -1,3 +1,5 @@
+import type { CardTrackingMode } from "./card-tracking.ts";
+
 export type AccountType = "asset" | "liability" | "income" | "expense" | "equity";
 export type TransactionSource = "agent" | "manual" | "import" | "system";
 
@@ -107,6 +109,7 @@ export interface CardStatement {
 	statementAmount: string;
 	minimumPaymentMinor: number;
 	minimumPayment: string;
+	accountingMode: CardTrackingMode;
 	paidAmountMinor: number;
 	paidAmount: string;
 	outstandingAmountMinor: number;
@@ -121,8 +124,28 @@ export interface RecordedCardStatement {
 	duplicate: boolean;
 }
 
+export interface IntegratedCardPayment extends PostedTransaction {
+	accountingMode: "integrated";
+}
+
+export interface LightweightCardPayment {
+	accountingMode: "lightweight";
+	id: string;
+	householdId: string;
+	statementId: string;
+	fundingAccountId?: string;
+	amountMinor: number;
+	amount: string;
+	occurredAt: string;
+	idempotencyKey?: string;
+	createdAt: string;
+	duplicate: boolean;
+}
+
+export type CardPayment = IntegratedCardPayment | LightweightCardPayment;
+
 export interface CardPaymentResult {
-	payment: PostedTransaction;
+	payment: CardPayment;
 	statement: CardStatement;
 }
 
@@ -150,7 +173,7 @@ export interface RecordCardStatementInput {
 
 export interface RecordCardPaymentInput {
 	statementId: string;
-	fundingAccountId: string;
+	fundingAccountId?: string;
 	amount: string;
 	occurredAt?: string;
 	idempotencyKey?: string;

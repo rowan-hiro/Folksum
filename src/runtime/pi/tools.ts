@@ -4,6 +4,7 @@ import { Type } from "@earendil-works/pi-ai";
 import { FinanceApplication, type FinanceApplicationResult } from "../../app/finance-application.ts";
 import type { FinanceIr } from "../../app/finance-ir.ts";
 import type { IdentityScope } from "../../app/identity.ts";
+import type { CardTrackingMode } from "../../core/card-tracking.ts";
 
 export interface PiConfirmationRequest {
 	pendingOperationId: string;
@@ -21,6 +22,7 @@ export interface FinanceToolDetails {
 export interface CreateFinanceToolsOptions {
 	application: FinanceApplication;
 	scope: IdentityScope;
+	cardTrackingMode: CardTrackingMode;
 	onConfirmationRequired?: (request: PiConfirmationRequest) => void;
 }
 
@@ -79,7 +81,7 @@ interface RecordCardStatementParams {
 
 interface RecordCardPaymentParams {
 	statementId: string;
-	fundingAccountId: string;
+	fundingAccountId?: string;
 	amount: string;
 	occurredAt?: string;
 }
@@ -112,7 +114,7 @@ interface GetSpendingSummaryParams {
 }
 
 export function createFinanceTools(options: CreateFinanceToolsOptions): AgentTool[] {
-	const { application, scope, onConfirmationRequired } = options;
+	const { application, scope, cardTrackingMode, onConfirmationRequired } = options;
 
 	function base(kind: FinanceIr["kind"], payload: object): Omit<FinanceIr, "kind" | "payload"> & {
 		kind: FinanceIr["kind"];
@@ -232,7 +234,10 @@ export function createFinanceTools(options: CreateFinanceToolsOptions): AgentToo
 		{
 			name: "record_expense",
 			label: "Record expense",
-			description: "Record an everyday expense against an expense account and asset or credit-card account.",
+			description:
+				cardTrackingMode === "integrated"
+					? "Record an everyday expense against an expense account and an asset or credit-card ledger account."
+					: "Record an everyday ledger expense paid from an asset account. Credit-card obligations are tracked separately in lightweight mode.",
 			parameters: Type.Object({
 				description: Type.String(),
 				amount: Type.String({ description: "Plain decimal amount" }),
@@ -314,7 +319,7 @@ export function createFinanceTools(options: CreateFinanceToolsOptions): AgentToo
 		{
 			name: "record_card_statement",
 			label: "Record card statement",
-			description: "Propose a credit-card statement with its statement period, amount, and due date.",
+			description: `Propose a credit-card statement with its statement period, amount, and due date. The statement will retain the current ${cardTrackingMode} accounting mode.`,
 			parameters: Type.Object({
 				cardAccountId: Type.String(),
 				periodStart: Type.String({ description: "YYYY-MM-DD" }),
@@ -333,10 +338,15 @@ export function createFinanceTools(options: CreateFinanceToolsOptions): AgentToo
 		{
 			name: "record_card_payment",
 			label: "Record card payment",
-			description: "Propose recording and allocating a card repayment. Always requires confirmation.",
+			description:
+				cardTrackingMode === "integrated"
+					? "Propose recording and allocating a card repayment through the ledger. fundingAccountId is required. Always requires confirmation."
+					: "Propose marking a standalone card-statement repayment without changing ledger balances. fundingAccountId is optional metadata. Always requires confirmation.",
 			parameters: Type.Object({
 				statementId: Type.String(),
-				fundingAccountId: Type.String(),
+				...(cardTrackingMode === "integrated"
+					? { fundingAccountId: Type.String() }
+					: { fundingAccountId: Type.Optional(Type.String()) }),
 				amount: Type.String(),
 				occurredAt: Type.Optional(Type.String()),
 			}),

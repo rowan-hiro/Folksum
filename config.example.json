@@ -6,6 +6,7 @@
 	"session": "default",
 	"memberName": "Local Owner",
 	"timezone": "Asia/Hong_Kong",
+	"cardTrackingMode": "lightweight",
 	"provider": "openai",
 	"thinkingLevel": "low"
 }

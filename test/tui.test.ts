@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -8,6 +8,7 @@ import type { Terminal } from "@earendil-works/pi-tui";
 
 import { loadApplicationConfig } from "../src/app/config.ts";
 import { SessionIdentityService } from "../src/app/session.ts";
+import { ApplicationSettingsController } from "../src/app/settings.ts";
 import {
 	containsLikelyCredential,
 	formatAuthStatus,
@@ -135,6 +136,7 @@ test("starts and restores the terminal without requiring model credentials", asy
 	});
 	const models = createHomeWealthModels();
 	const settingsController = new PiRuntimeSettingsController({ models, config, env: {} });
+	const applicationSettingsController = new ApplicationSettingsController({ config, env: {} });
 	const terminal = new FakeTerminal();
 
 	const running = runHomeWealthTui({
@@ -146,6 +148,7 @@ test("starts and restores the terminal without requiring model credentials", asy
 		config,
 		models,
 		settingsController,
+		applicationSettingsController,
 		terminal,
 	});
 	await new Promise<void>((resolve) => setImmediate(resolve));
@@ -157,7 +160,7 @@ test("starts and restores the terminal without requiring model credentials", asy
 	assert.equal(terminal.stopped, true);
 });
 
-test("keeps settings open while cycling providers and changing another setting", async (context) => {
+test("keeps settings open while changing runtime and credit-card tracking settings", async (context) => {
 	const directory = createDirectory(context);
 	const configPath = join(directory, "config.json");
 	writeFileSync(configPath, "{}\n");
@@ -192,6 +195,7 @@ test("keeps settings open while cycling providers and changing another setting",
 		}
 	};
 	const settingsController = new PiRuntimeSettingsController({ models, config, env: {} });
+	const applicationSettingsController = new ApplicationSettingsController({ config, env: {} });
 	const terminal = new FakeTerminal();
 
 	const running = runHomeWealthTui({
@@ -203,11 +207,13 @@ test("keeps settings open while cycling providers and changing another setting",
 		config,
 		models,
 		settingsController,
+		applicationSettingsController,
 		terminal,
 	});
 	await new Promise<void>((resolve) => setImmediate(resolve));
 	terminal.send("\u000f");
 	await waitFor(() => terminal.output.includes("Provider"), "the settings overlay");
+	assert.match(terminal.output, /Credit-card tracking/);
 
 	let checkBaseline = authChecks;
 	terminal.send("\r");
@@ -235,14 +241,321 @@ test("keeps settings open while cycling providers and changing another setting",
 	);
 	await waitFor(() => authChecks >= checkBaseline + 2, "the final settings refresh");
 
+	terminal.send("\u001b[B");
+	checkBaseline = authChecks;
+	terminal.send("\r");
+	await waitFor(
+		() => applicationSettingsController.current().cardTrackingMode === "integrated",
+		"the integrated credit-card tracking mode",
+	);
+	await waitFor(() => authChecks >= checkBaseline + 2, "the application settings refresh");
+	assert.equal(wealth.getCardTrackingMode(), "integrated");
+
+	terminal.send("\u001b[A");
+	checkBaseline = authChecks;
+	terminal.send("\r");
+	await waitFor(
+		() => settingsController.current().thinkingLevel === "high",
+		"another runtime update without reopening settings",
+	);
+	await waitFor(() => authChecks >= checkBaseline + 2, "the post-mode-switch settings refresh");
+
 	assert.deepEqual(settingsController.current(), {
 		provider: "google",
 		model: "gemini-3.6-flash",
-		thinkingLevel: "medium",
+		thinkingLevel: "high",
+	});
+	assert.deepEqual(JSON.parse(readFileSync(configPath, "utf8")), {
+		provider: "google",
+		model: "gemini-3.6-flash",
+		thinkingLevel: "high",
+		cardTrackingMode: "integrated",
 	});
 	terminal.send("\u001b");
 	terminal.send("\u0003");
 	await running;
+});
+
+test("restores the displayed card mode when an environment override rejects the change", async (context) => {
+	const directory = createDirectory(context);
+	const configPath = join(directory, "config.json");
+	const originalConfig = JSON.stringify({ cardTrackingMode: "lightweight" });
+	writeFileSync(configPath, originalConfig);
+	const config = loadApplicationConfig({
+		cwd: directory,
+		env: { HWM_CONFIG_PATH: configPath },
+	});
+	const database = new WealthDatabase(":memory:");
+	context.after(() => database.close());
+	const wealth = new WealthService(database, {
+		baseCurrency: "HKD",
+		cardTrackingMode: config.cardTrackingMode,
+	});
+	const identities = new SessionIdentityService(database);
+	const owner = identities.createMember({
+		householdId: wealth.household.id,
+		displayName: "Owner",
+		role: "owner",
+		timezone: "Asia/Hong_Kong",
+	});
+	identities.bindChannelIdentity({ memberId: owner.id, channel: "cli", externalId: "owner" });
+	const scope = identities.resolve({
+		channel: "cli",
+		externalId: "owner",
+		conversationKey: "settings-override-rollback-test",
+	});
+	const models = createHomeWealthModels();
+	const originalCheckAuth = models.checkAuth.bind(models);
+	let authChecks = 0;
+	models.checkAuth = async (...args) => {
+		try {
+			return await originalCheckAuth(...args);
+		} finally {
+			authChecks += 1;
+		}
+	};
+	const settingsController = new PiRuntimeSettingsController({ models, config, env: {} });
+	const applicationSettingsController = new ApplicationSettingsController({
+		config,
+		env: { HWM_CARD_TRACKING_MODE: "lightweight" },
+	});
+	const originalUpdate = applicationSettingsController.update.bind(applicationSettingsController);
+	const attemptedModes: string[] = [];
+	applicationSettingsController.update = async (patch) => {
+		if (patch.cardTrackingMode) attemptedModes.push(patch.cardTrackingMode);
+		return originalUpdate(patch);
+	};
+	const terminal = new FakeTerminal();
+
+	const running = runHomeWealthTui({
+		wealth,
+		identities,
+		scope,
+		database,
+		currentDate: "2026-08-12",
+		config,
+		models,
+		settingsController,
+		applicationSettingsController,
+		terminal,
+	});
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	terminal.send("\u000f");
+	await waitFor(() => terminal.output.includes("Credit-card tracking"), "the settings overlay");
+	terminal.send("\u001b[B");
+	terminal.send("\u001b[B");
+	terminal.send("\u001b[B");
+
+	let checkBaseline = authChecks;
+	terminal.send("\r");
+	await waitFor(() => attemptedModes.length === 1, "the rejected card-mode update");
+	await waitFor(() => authChecks >= checkBaseline + 2, "the first authoritative refresh");
+
+	checkBaseline = authChecks;
+	terminal.send("\r");
+	await waitFor(() => attemptedModes.length === 2, "the repeated card-mode update");
+	await waitFor(() => authChecks >= checkBaseline + 2, "the second authoritative refresh");
+
+	assert.deepEqual(attemptedModes, ["integrated", "integrated"]);
+	assert.deepEqual(applicationSettingsController.current(), { cardTrackingMode: "lightweight" });
+	assert.equal(wealth.getCardTrackingMode(), "lightweight");
+	assert.equal(readFileSync(configPath, "utf8"), originalConfig);
+	terminal.send("\u001b");
+	terminal.send("\u0003");
+	await running;
+});
+
+test("does not start a model prompt while the settings overlay is opening", async (context) => {
+	const directory = createDirectory(context);
+	const configPath = join(directory, "config.json");
+	writeFileSync(configPath, '{"provider":"openai","model":"gpt-4.1"}\n');
+	const config = loadApplicationConfig({
+		cwd: directory,
+		env: { HWM_CONFIG_PATH: configPath },
+	});
+	const database = new WealthDatabase(":memory:");
+	context.after(() => database.close());
+	const wealth = new WealthService(database, { baseCurrency: "HKD" });
+	const identities = new SessionIdentityService(database);
+	const owner = identities.createMember({
+		householdId: wealth.household.id,
+		displayName: "Owner",
+		role: "owner",
+		timezone: "Asia/Hong_Kong",
+	});
+	identities.bindChannelIdentity({ memberId: owner.id, channel: "cli", externalId: "owner" });
+	const scope = identities.resolve({
+		channel: "cli",
+		externalId: "owner",
+		conversationKey: "settings-open-race-test",
+	});
+	const models = createHomeWealthModels();
+	const originalCheckAuth = models.checkAuth.bind(models);
+	let blockSettingsAuth = false;
+	let settingsAuthStarted: (() => void) | undefined;
+	const didStartSettingsAuth = new Promise<void>((resolve) => {
+		settingsAuthStarted = resolve;
+	});
+	let releaseSettingsAuth: (() => void) | undefined;
+	const settingsAuthCanFinish = new Promise<void>((resolve) => {
+		releaseSettingsAuth = resolve;
+	});
+	models.checkAuth = async (...args) => {
+		if (blockSettingsAuth && args[1] === undefined) {
+			settingsAuthStarted?.();
+			await settingsAuthCanFinish;
+		}
+		return originalCheckAuth(...args);
+	};
+	const settingsController = new PiRuntimeSettingsController({ models, config, env: {} });
+	const applicationSettingsController = new ApplicationSettingsController({ config, env: {} });
+	const terminal = new FakeTerminal();
+	let factoryCalls = 0;
+
+	const running = runHomeWealthTui({
+		wealth,
+		identities,
+		scope,
+		database,
+		currentDate: "2026-08-12",
+		config,
+		models,
+		settingsController,
+		applicationSettingsController,
+		terminal,
+		runtimeFactory: async () => {
+			factoryCalls += 1;
+			throw new Error("A runtime must not start while settings are opening.");
+		},
+	});
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	blockSettingsAuth = true;
+	terminal.send("\u000f");
+	await didStartSettingsAuth;
+
+	terminal.send("must not be submitted");
+	terminal.send("\r");
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(factoryCalls, 0);
+
+	releaseSettingsAuth?.();
+	await waitFor(() => terminal.output.includes("Credit-card tracking"), "the settings overlay");
+	terminal.send("\u001b");
+	terminal.send("\u0003");
+	await running;
+	assert.equal(factoryCalls, 0);
+});
+
+test("rebuilds the model runtime after changing credit-card tracking mode", async (context) => {
+	const directory = createDirectory(context);
+	const configPath = join(directory, "config.json");
+	writeFileSync(
+		configPath,
+		JSON.stringify({
+			provider: "openai",
+			model: "gpt-4.1",
+			cardTrackingMode: "lightweight",
+		}),
+	);
+	const config = loadApplicationConfig({
+		cwd: directory,
+		env: { HWM_CONFIG_PATH: configPath },
+	});
+	const database = new WealthDatabase(":memory:");
+	context.after(() => database.close());
+	const wealth = new WealthService(database, {
+		baseCurrency: "HKD",
+		cardTrackingMode: config.cardTrackingMode,
+	});
+	const identities = new SessionIdentityService(database);
+	const owner = identities.createMember({
+		householdId: wealth.household.id,
+		displayName: "Owner",
+		role: "owner",
+		timezone: "Asia/Hong_Kong",
+	});
+	identities.bindChannelIdentity({ memberId: owner.id, channel: "cli", externalId: "owner" });
+	const scope = identities.resolve({
+		channel: "cli",
+		externalId: "owner",
+		conversationKey: "mode-runtime-rebuild-test",
+	});
+	const credentialStore = new FileCredentialStore(join(directory, "auth.json"));
+	await credentialStore.modify("openai", async () => ({
+		type: "api_key",
+		key: "test-only-key",
+	}));
+	const models = createHomeWealthModels({ credentials: credentialStore });
+	const originalCheckAuth = models.checkAuth.bind(models);
+	let authChecks = 0;
+	models.checkAuth = async (...args) => {
+		try {
+			return await originalCheckAuth(...args);
+		} finally {
+			authChecks += 1;
+		}
+	};
+	const settingsController = new PiRuntimeSettingsController({ models, config, env: {} });
+	const applicationSettingsController = new ApplicationSettingsController({ config, env: {} });
+	const terminal = new FakeTerminal();
+	const runtimeModes: string[] = [];
+	let promptCalls = 0;
+
+	const running = runHomeWealthTui({
+		wealth,
+		identities,
+		scope,
+		database,
+		currentDate: "2026-08-12",
+		config,
+		models,
+		settingsController,
+		applicationSettingsController,
+		terminal,
+		runtimeFactory: async (runtimeConfig) => {
+			runtimeModes.push(runtimeConfig.cardTrackingMode);
+			return {
+				async prompt(_text: string, onText?: (delta: string) => void): Promise<void> {
+					promptCalls += 1;
+					onText?.("Done.");
+				},
+				abort(): void {},
+				confirm(): never {
+					throw new Error("No confirmation was expected.");
+				},
+				reject(): void {},
+			} as unknown as PiRuntimeAdapter;
+		},
+	});
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	const promptCheckBaseline = authChecks;
+	terminal.send("first request");
+	terminal.send("\r");
+	await waitFor(() => promptCalls === 1, "the first model prompt");
+	await waitFor(() => terminal.output.includes("Assistant: Done."), "the first model response");
+	await waitFor(() => authChecks >= promptCheckBaseline + 2, "the completed first prompt");
+
+	terminal.send("\u000f");
+	await waitFor(() => terminal.output.includes("Credit-card tracking"), "the settings overlay");
+	terminal.send("\u001b[B");
+	terminal.send("\u001b[B");
+	terminal.send("\u001b[B");
+	const checkBaseline = authChecks;
+	terminal.send("\r");
+	await waitFor(
+		() => applicationSettingsController.current().cardTrackingMode === "integrated",
+		"the integrated credit-card tracking mode",
+	);
+	await waitFor(() => authChecks >= checkBaseline + 2, "the application settings refresh");
+	terminal.send("\u001b");
+
+	terminal.send("second request");
+	terminal.send("\r");
+	await waitFor(() => promptCalls === 2, "the second model prompt");
+	terminal.send("\u0003");
+	await running;
+
+	assert.deepEqual(runtimeModes, ["lightweight", "integrated"]);
 });
 
 test("occupies the prompt operation before asynchronous runtime setup", async (context) => {
@@ -276,6 +589,7 @@ test("occupies the prompt operation before asynchronous runtime setup", async (c
 	}));
 	const models = createHomeWealthModels({ credentials: credentialStore });
 	const settingsController = new PiRuntimeSettingsController({ models, config, env: {} });
+	const applicationSettingsController = new ApplicationSettingsController({ config, env: {} });
 	const terminal = new FakeTerminal();
 	let releaseRuntime: (() => void) | undefined;
 	const runtimeCanFinish = new Promise<void>((resolve) => {
@@ -309,6 +623,7 @@ test("occupies the prompt operation before asynchronous runtime setup", async (c
 		config,
 		models,
 		settingsController,
+		applicationSettingsController,
 		terminal,
 		runtimeFactory: async () => {
 			factoryCalls += 1;

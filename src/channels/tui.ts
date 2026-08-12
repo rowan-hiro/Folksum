@@ -26,6 +26,8 @@ import { ConfirmationStore } from "../app/confirmation.ts";
 import { FinanceApplication } from "../app/finance-application.ts";
 import type { IdentityScope } from "../app/identity.ts";
 import { SessionIdentityService } from "../app/session.ts";
+import { ApplicationSettingsController } from "../app/settings.ts";
+import { CARD_TRACKING_MODES, isCardTrackingMode } from "../core/card-tracking.ts";
 import { WealthDatabase } from "../core/database.ts";
 import { WealthService } from "../core/wealth-service.ts";
 import { SUPPORTED_PI_PROVIDERS, type SupportedPiProviderId } from "../runtime/pi/models.ts";
@@ -89,6 +91,7 @@ export interface RunHomeWealthTuiInput {
 	config: ApplicationConfig;
 	models: Models;
 	settingsController: PiRuntimeSettingsController;
+	applicationSettingsController: ApplicationSettingsController;
 	terminal?: Terminal;
 	runtimeFactory?: (config: PiRuntimeConfig) => Promise<PiRuntimeAdapter>;
 }
@@ -249,7 +252,7 @@ class HomeWealthTui {
 	private async handleSubmit(rawText: string): Promise<void> {
 		const text = rawText.trim();
 		if (!text) return;
-		if (this.busy) {
+		if (this.busy || this.openingSettings || this.settingsOverlay) {
 			this.append("System", "Wait for the current operation to finish, or press Ctrl+C to cancel it.");
 			return;
 		}
@@ -333,6 +336,7 @@ class HomeWealthTui {
 					identityService: this.input.identities,
 					scope: this.input.scope,
 					currentDate: this.input.currentDate,
+					cardTrackingMode: this.input.wealth.getCardTrackingMode(),
 					thinkingLevel: selected.thinkingLevel,
 					models: this.input.models,
 					settingsController: this.input.settingsController,
@@ -414,8 +418,9 @@ class HomeWealthTui {
 		this.openingSettings = true;
 		try {
 			const snapshot = this.input.settingsController.current();
+			const applicationSnapshot = this.input.applicationSettingsController.current();
 			const auth = await this.readAuthState(snapshot.provider);
-			if (this.shuttingDown) return;
+			if (this.shuttingDown || this.busy) return;
 			let view!: SettingsViewState;
 			const items = [
 				{
@@ -453,6 +458,13 @@ class HomeWealthTui {
 					description: "Requested reasoning level. The selected model may clamp unsupported levels.",
 					currentValue: snapshot.thinkingLevel,
 					values: [...THINKING_LEVELS],
+				},
+				{
+					id: "cardTrackingMode",
+					label: "Credit-card tracking",
+					description: "Keep statements separate, or integrate card activity with the ledger.",
+					currentValue: applicationSnapshot.cardTrackingMode,
+					values: [...CARD_TRACKING_MODES],
 				},
 				{
 					id: "authentication",
@@ -519,14 +531,19 @@ class HomeWealthTui {
 		if (revealTranscript && this.settingsView === view) overlay?.setHidden(true);
 		try {
 			await this.applySetting(id, value);
-			await this.synchronizeSettingsView(view);
 		} catch (error) {
 			this.append("System", safeError(error));
 		} finally {
-			if (this.settingsView === view) {
-				view.panel.setLocked(false);
-				if (revealTranscript) overlay?.setHidden(false);
-				this.tui.requestRender();
+			try {
+				await this.synchronizeSettingsView(view);
+			} catch (error) {
+				this.append("System", safeError(error));
+			} finally {
+				if (this.settingsView === view) {
+					view.panel.setLocked(false);
+					if (revealTranscript) overlay?.setHidden(false);
+					this.tui.requestRender();
+				}
 			}
 		}
 	}
@@ -538,6 +555,10 @@ class HomeWealthTui {
 		view.settings.updateValue("provider", settings.provider);
 		view.settings.updateValue("model", settings.model ?? "not selected");
 		view.settings.updateValue("thinkingLevel", settings.thinkingLevel);
+		view.settings.updateValue(
+			"cardTrackingMode",
+			this.input.applicationSettingsController.current().cardTrackingMode,
+		);
 
 		const generation = ++view.authGeneration;
 		const auth = await this.readAuthState(settings.provider);
@@ -556,21 +577,55 @@ class HomeWealthTui {
 	private async applySetting(id: string, value: string): Promise<void> {
 		this.setBusy(true);
 		try {
-			if (id === "authentication") {
-				if (value === "logout") await this.logoutCurrentProvider();
-				else if (value.startsWith("login:")) await this.login(value.slice(6) as AuthType);
-				return;
+			switch (id) {
+				case "provider": {
+					const next = await this.input.settingsController.update({
+						provider: value as SupportedPiProviderId,
+					});
+					this.append("System", `Runtime settings updated: ${formatSettings(next)}.`);
+					return;
+				}
+				case "model": {
+					const next = await this.input.settingsController.update({ model: value });
+					this.append("System", `Runtime settings updated: ${formatSettings(next)}.`);
+					return;
+				}
+				case "thinkingLevel": {
+					const next = await this.input.settingsController.update({
+						thinkingLevel: value as RuntimeThinkingLevel,
+					});
+					this.append("System", `Runtime settings updated: ${formatSettings(next)}.`);
+					return;
+				}
+				case "cardTrackingMode": {
+					if (!isCardTrackingMode(value)) {
+						throw new Error(`Unsupported credit-card tracking mode "${value}".`);
+					}
+					const next = await this.input.applicationSettingsController.update({
+						cardTrackingMode: value,
+					});
+					this.input.wealth.setCardTrackingMode(next.cardTrackingMode);
+					this.runtime = undefined;
+					this.append(
+						"System",
+						`Application settings updated: credit-card tracking ${next.cardTrackingMode}.`,
+					);
+					return;
+				}
+				case "authentication":
+					if (value === "logout") {
+						await this.logoutCurrentProvider();
+						return;
+					}
+					if (value.startsWith("login:")) {
+						await this.login(value.slice(6) as AuthType);
+						return;
+					}
+					if (value === "none") return;
+					throw new Error(`Unsupported authentication action "${value}".`);
+				default:
+					throw new Error(`Unknown settings item "${id}".`);
 			}
-			const patch =
-				id === "provider"
-					? { provider: value as SupportedPiProviderId }
-					: id === "model"
-						? { model: value }
-						: { thinkingLevel: value as RuntimeThinkingLevel };
-			const next = await this.input.settingsController.update(patch);
-			this.append("System", `Runtime settings updated: ${formatSettings(next)}.`);
-		} catch (error) {
-			this.append("System", safeError(error));
 		} finally {
 			this.setBusy(false);
 			await this.refreshStatus();

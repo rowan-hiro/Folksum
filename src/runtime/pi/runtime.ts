@@ -5,6 +5,7 @@ import type { RuntimeThinkingLevel } from "../../app/config.ts";
 import { FinanceApplication, type FinanceApplicationResult } from "../../app/finance-application.ts";
 import type { IdentityScope } from "../../app/identity.ts";
 import { SessionIdentityService, type SessionMessageRole } from "../../app/session.ts";
+import type { CardTrackingMode } from "../../core/card-tracking.ts";
 import { FileCredentialStore } from "./credential-store.ts";
 import {
 	createHomeWealthModels,
@@ -25,6 +26,7 @@ export interface PiRuntimeConfig {
 	identityService: SessionIdentityService;
 	scope: IdentityScope;
 	currentDate: string;
+	cardTrackingMode: CardTrackingMode;
 	thinkingLevel?: RuntimeThinkingLevel;
 	models?: MutableModels;
 	settingsController?: PiRuntimeSettingsController;
@@ -98,6 +100,7 @@ export async function createPiRuntime(config: PiRuntimeConfig): Promise<PiRuntim
 	const financeTools = createFinanceTools({
 		application: config.application,
 		scope: config.scope,
+		cardTrackingMode: config.cardTrackingMode,
 		...(config.onConfirmationRequired ? { onConfirmationRequired: config.onConfirmationRequired } : {}),
 	});
 	const tools = config.settingsController
@@ -105,7 +108,11 @@ export async function createPiRuntime(config: PiRuntimeConfig): Promise<PiRuntim
 		: financeTools;
 	const agent = new Agent({
 		initialState: {
-			systemPrompt: buildFinanceSystemPrompt(config.scope, config.currentDate),
+			systemPrompt: buildFinanceSystemPrompt(
+				config.scope,
+				config.currentDate,
+				config.cardTrackingMode,
+			),
 			model: selected.model,
 			thinkingLevel: selected.thinkingLevel,
 			tools,

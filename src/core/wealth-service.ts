@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { isCardTrackingMode, type CardTrackingMode } from "./card-tracking.ts";
 import { WealthDatabase } from "./database.ts";
 import { WealthError } from "./errors.ts";
 import { formatDecimalAmount, normalizeCurrency, parseDecimalAmount } from "./money.ts";
@@ -15,6 +16,7 @@ import type {
 	CreateAccountInput,
 	Household,
 	LedgerTransaction,
+	LightweightCardPayment,
 	ListCardRemindersInput,
 	NetWorthCurrencySummary,
 	NetWorthItem,
@@ -38,10 +40,11 @@ import type {
 	TransactionSource,
 } from "./types.ts";
 
-interface WealthServiceOptions {
+export interface WealthServiceOptions {
 	householdId?: string;
 	householdName?: string;
 	baseCurrency?: string;
+	cardTrackingMode?: CardTrackingMode;
 }
 
 interface AccountRow {
@@ -88,8 +91,20 @@ interface CardStatementRow {
 	currency: string;
 	statement_amount_minor: number;
 	minimum_payment_minor: number;
+	accounting_mode: CardTrackingMode;
 	created_at: string;
 	paid_amount_minor: number;
+}
+
+interface StandaloneStatementPaymentRow {
+	id: string;
+	household_id: string;
+	statement_id: string;
+	funding_account_id: string | null;
+	amount_minor: number;
+	occurred_at: string;
+	idempotency_key: string | null;
+	created_at: string;
 }
 
 interface TrackedAssetRow {
@@ -141,10 +156,27 @@ const ASSET_KINDS = new Set<AssetKind>(["property", "investment", "vehicle", "co
 export class WealthService {
 	readonly household: Household;
 	private readonly database: WealthDatabase;
+	private cardTrackingMode: CardTrackingMode;
 
 	constructor(database: WealthDatabase, options: WealthServiceOptions = {}) {
 		this.database = database;
+		const cardTrackingMode = options.cardTrackingMode ?? "lightweight";
+		if (!isCardTrackingMode(cardTrackingMode)) {
+			throw new Error(`Unsupported card tracking mode "${String(cardTrackingMode)}".`);
+		}
+		this.cardTrackingMode = cardTrackingMode;
 		this.household = this.loadOrCreateHousehold(options);
+	}
+
+	getCardTrackingMode(): CardTrackingMode {
+		return this.cardTrackingMode;
+	}
+
+	setCardTrackingMode(mode: CardTrackingMode): void {
+		if (!isCardTrackingMode(mode)) {
+			throw new Error(`Unsupported card tracking mode "${String(mode)}".`);
+		}
+		this.cardTrackingMode = mode;
 	}
 
 	createAccount(input: CreateAccountInput): Account {
@@ -155,6 +187,7 @@ export class WealthService {
 		}
 
 		const currency = normalizeCurrency(input.currency ?? this.household.baseCurrency);
+		const subtype = cleanOptionalText(input.subtype);
 		const openingBalanceMinor = input.openingBalance
 			? parseDecimalAmount(input.openingBalance, currency)
 			: 0;
@@ -163,6 +196,16 @@ export class WealthService {
 		}
 		if (openingBalanceMinor !== 0 && !["asset", "liability"].includes(input.type)) {
 			throw new WealthError("invalid_account", "Only asset and liability accounts can have an opening balance.");
+		}
+		if (
+			openingBalanceMinor !== 0 &&
+			subtype === "credit_card" &&
+			this.cardTrackingMode === "lightweight"
+		) {
+			throw new WealthError(
+				"invalid_account",
+				"Credit card opening balances require integrated card tracking mode.",
+			);
 		}
 
 		const accountId = randomUUID();
@@ -180,7 +223,7 @@ export class WealthService {
 						this.household.id,
 						name,
 						input.type,
-						cleanOptionalText(input.subtype) ?? null,
+						subtype ?? null,
 						currency,
 						cleanOptionalText(input.ownerName) ?? null,
 						now,
@@ -257,10 +300,19 @@ export class WealthService {
 	}
 
 	recordExpense(input: RecordExpenseInput): PostedTransaction {
+		const duplicate = this.resolveLedgerIdempotency(input.idempotencyKey);
+		if (duplicate) return duplicate;
+
 		const expense = this.getAccount(input.expenseAccountId);
 		const funding = this.getAccount(input.fundingAccountId);
 		this.requireAccountType(expense, ["expense"], "Expense destination");
 		this.requireAccountType(funding, ["asset", "liability"], "Expense funding");
+		if (this.cardTrackingMode === "lightweight" && funding.subtype === "credit_card") {
+			throw new WealthError(
+				"invalid_transaction",
+				"Credit card expenses require integrated card tracking mode.",
+			);
+		}
 		this.requireSameCurrency(expense, funding);
 		const amountMinor = this.requirePositiveAmount(input.amount, expense.currency);
 
@@ -299,8 +351,17 @@ export class WealthService {
 	}
 
 	recordTransfer(input: RecordTransferInput): PostedTransaction {
+		const duplicate = this.resolveLedgerIdempotency(input.idempotencyKey);
+		if (duplicate) return duplicate;
+
 		const source = this.getAccount(input.fromAccountId);
 		const destination = this.getAccount(input.toAccountId);
+		if (source.subtype === "credit_card" || destination.subtype === "credit_card") {
+			throw new WealthError(
+				"invalid_transaction",
+				"Credit card payments must be recorded with recordCardPayment.",
+			);
+		}
 		if (source.id === destination.id) {
 			throw new WealthError("invalid_transaction", "Transfer accounts must be different.");
 		}
@@ -437,8 +498,8 @@ export class WealthService {
 			.prepare(
 				`INSERT INTO credit_card_statements
 					(id, card_account_id, period_start, period_end, statement_date, due_date,
-					 currency, statement_amount_minor, minimum_payment_minor, created_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					 currency, statement_amount_minor, minimum_payment_minor, accounting_mode, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			)
 			.run(
 				id,
@@ -450,6 +511,7 @@ export class WealthService {
 				card.currency,
 				statementAmountMinor,
 				minimumPaymentMinor,
+				this.cardTrackingMode,
 				createdAt,
 			);
 
@@ -457,30 +519,114 @@ export class WealthService {
 	}
 
 	getCardStatement(statementId: string, asOf?: string): CardStatement {
-		const row = this.getCardStatementRow(statementId);
+		const date = normalizeDate(asOf ?? currentDate());
+		const row = this.getCardStatementRow(statementId, date);
 		if (!row) {
 			throw new WealthError("card_statement_not_found", `Card statement "${statementId}" was not found.`);
 		}
-		return mapCardStatement(row, normalizeDate(asOf ?? currentDate()));
+		return mapCardStatement(row, date);
 	}
 
 	listCardStatements(asOf?: string): CardStatement[] {
 		const date = normalizeDate(asOf ?? currentDate());
 		const rows = this.database.connection
 			.prepare(cardStatementQuery("WHERE a.household_id = ?", "ORDER BY s.due_date, s.id"))
-			.all(this.household.id) as unknown as CardStatementRow[];
+			.all(paymentCutoff(date), paymentCutoff(date), this.household.id) as unknown as CardStatementRow[];
 		return rows.map((row) => mapCardStatement(row, date));
 	}
 
 	recordCardPayment(input: RecordCardPaymentInput): CardPaymentResult {
 		return this.database.transaction(() => {
-			const statement = this.getCardStatement(input.statementId, timestampDate(input.occurredAt));
-			const funding = this.getAccount(input.fundingAccountId);
+			const occurredAt = normalizeTimestamp(input.occurredAt);
+			const statement = this.getCardStatement(input.statementId, occurredAt.slice(0, 10));
+			const amountMinor = this.requirePositiveAmount(input.amount, statement.currency);
+			const idempotencyKey = cleanOptionalText(input.idempotencyKey);
+			const fundingAccountId = cleanOptionalText(input.fundingAccountId);
+
+			if (statement.accountingMode === "lightweight") {
+				const funding = fundingAccountId ? this.getAccount(fundingAccountId) : undefined;
+				if (funding) {
+					this.requireAccountType(funding, ["asset"], "Card payment funding");
+					if (funding.currency !== statement.currency) {
+						throw new WealthError(
+							"currency_mismatch",
+							`Account "${funding.name}" uses ${funding.currency}, not ${statement.currency}.`,
+						);
+					}
+				}
+
+				if (idempotencyKey) {
+					const existing = this.database.connection
+						.prepare(
+							"SELECT * FROM standalone_statement_payments WHERE household_id = ? AND idempotency_key = ?",
+						)
+						.get(this.household.id, idempotencyKey) as unknown as
+						| StandaloneStatementPaymentRow
+						| undefined;
+					if (existing) {
+						if (
+							existing.statement_id !== statement.id ||
+							existing.amount_minor !== amountMinor ||
+							existing.funding_account_id !== (funding?.id ?? null)
+						) {
+							throw new WealthError("duplicate", "Idempotency key belongs to a different card payment.");
+						}
+						return {
+							payment: mapStandaloneStatementPayment(existing, statement.currency, true),
+							statement: this.getCardStatement(statement.id, occurredAt.slice(0, 10)),
+						};
+					}
+					const ledgerCollision = this.database.connection
+						.prepare("SELECT 1 FROM transactions WHERE household_id = ? AND idempotency_key = ?")
+						.get(this.household.id, idempotencyKey);
+					if (ledgerCollision) {
+						throw new WealthError("duplicate", "Idempotency key belongs to a different operation.");
+					}
+				}
+
+				this.requirePaymentWithinStatementBalance(amountMinor, statement);
+
+				const row: StandaloneStatementPaymentRow = {
+					id: randomUUID(),
+					household_id: this.household.id,
+					statement_id: statement.id,
+					funding_account_id: funding?.id ?? null,
+					amount_minor: amountMinor,
+					occurred_at: occurredAt,
+					idempotency_key: idempotencyKey ?? null,
+					created_at: new Date().toISOString(),
+				};
+				this.database.connection
+					.prepare(
+						`INSERT INTO standalone_statement_payments
+							(id, household_id, statement_id, funding_account_id, amount_minor,
+							 occurred_at, idempotency_key, created_at)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+					)
+					.run(
+						row.id,
+						row.household_id,
+						row.statement_id,
+						row.funding_account_id,
+						row.amount_minor,
+						row.occurred_at,
+						row.idempotency_key,
+						row.created_at,
+					);
+
+				return {
+					payment: mapStandaloneStatementPayment(row, statement.currency, false),
+					statement: this.getCardStatement(statement.id, occurredAt.slice(0, 10)),
+				};
+			}
+
+			if (!fundingAccountId) {
+				throw new WealthError("invalid_account", "Integrated card payments require a funding account.");
+			}
+			const funding = this.getAccount(fundingAccountId);
 			const card = this.getAccount(statement.cardAccountId);
 			this.requireAccountType(funding, ["asset"], "Card payment funding");
 			this.requireSameCurrency(funding, card);
-			const amountMinor = this.requirePositiveAmount(input.amount, statement.currency);
-			const idempotencyKey = cleanOptionalText(input.idempotencyKey);
 
 			if (idempotencyKey) {
 				const existing = this.database.connection
@@ -492,27 +638,42 @@ export class WealthService {
 							"SELECT amount_minor FROM statement_payments WHERE statement_id = ? AND transaction_id = ?",
 						)
 						.get(statement.id, existing.id) as { amount_minor: number } | undefined;
-					if (!allocation || allocation.amount_minor !== amountMinor) {
+					const transaction = this.getTransaction(existing.id);
+					const matchesFunding = transaction.postings.some(
+						(posting) => posting.accountId === funding.id && posting.amountMinor === -amountMinor,
+					);
+					if (!allocation || allocation.amount_minor !== amountMinor || !matchesFunding) {
 						throw new WealthError("duplicate", "Idempotency key belongs to a different card payment.");
 					}
 					return {
-						payment: { transaction: this.getTransaction(existing.id), duplicate: true },
-						statement: this.getCardStatement(statement.id, timestampDate(input.occurredAt)),
+						payment: { accountingMode: "integrated", transaction, duplicate: true },
+						statement: this.getCardStatement(statement.id, occurredAt.slice(0, 10)),
 					};
+				}
+				const standaloneCollision = this.database.connection
+					.prepare(
+						"SELECT 1 FROM standalone_statement_payments WHERE household_id = ? AND idempotency_key = ?",
+					)
+					.get(this.household.id, idempotencyKey);
+				if (standaloneCollision) {
+					throw new WealthError("duplicate", "Idempotency key belongs to a different operation.");
 				}
 			}
 
-			if (amountMinor > statement.outstandingAmountMinor) {
+			this.requirePaymentWithinStatementBalance(amountMinor, statement);
+			const maximumCardBalance = this.getMaximumAccountBalanceFromTimestamp(card.id, occurredAt);
+			const ledgerLiabilityMinor = maximumCardBalance < 0 ? -maximumCardBalance : 0;
+			if (amountMinor > ledgerLiabilityMinor) {
 				throw new WealthError(
 					"invalid_amount",
-					`Payment ${formatDecimalAmount(amountMinor, statement.currency)} exceeds outstanding amount ${statement.outstandingAmount}.`,
+					`Payment ${formatDecimalAmount(amountMinor, statement.currency)} exceeds current card liability ${formatDecimalAmount(ledgerLiabilityMinor, statement.currency)}.`,
 				);
 			}
 
-			const payment = this.postTransactionWithin({
+			const posted = this.postTransactionWithin({
 				description: `Payment for ${statement.cardAccountName} statement ${statement.statementDate}`,
 				currency: statement.currency,
-				occurredAt: normalizeTimestamp(input.occurredAt),
+				occurredAt,
 				source: "agent",
 				idempotencyKey,
 				postings: [
@@ -526,11 +687,11 @@ export class WealthService {
 						(id, statement_id, transaction_id, amount_minor, created_at)
 					 VALUES (?, ?, ?, ?, ?)`,
 				)
-				.run(randomUUID(), statement.id, payment.transaction.id, amountMinor, new Date().toISOString());
+				.run(randomUUID(), statement.id, posted.transaction.id, amountMinor, new Date().toISOString());
 
 			return {
-				payment,
-				statement: this.getCardStatement(statement.id, timestampDate(input.occurredAt)),
+				payment: { accountingMode: "integrated", ...posted },
+				statement: this.getCardStatement(statement.id, occurredAt.slice(0, 10)),
 			};
 		});
 	}
@@ -802,12 +963,8 @@ export class WealthService {
 	}
 
 	private postTransactionWithin(input: InternalTransactionInput): PostedTransaction {
-		if (input.idempotencyKey) {
-			const existing = this.database.connection
-				.prepare("SELECT id FROM transactions WHERE household_id = ? AND idempotency_key = ?")
-				.get(this.household.id, input.idempotencyKey) as { id: string } | undefined;
-			if (existing) return { transaction: this.getTransaction(existing.id), duplicate: true };
-		}
+		const duplicate = this.resolveLedgerIdempotency(input.idempotencyKey);
+		if (duplicate) return duplicate;
 
 		if (input.postings.length < 2) {
 			throw new WealthError("invalid_transaction", "A transaction requires at least two postings.");
@@ -861,6 +1018,26 @@ export class WealthService {
 		return { transaction: this.getTransaction(transactionId), duplicate: false };
 	}
 
+	private resolveLedgerIdempotency(idempotencyKey: string | undefined): PostedTransaction | undefined {
+		const key = cleanOptionalText(idempotencyKey);
+		if (!key) return undefined;
+
+		const standaloneCollision = this.database.connection
+			.prepare(
+				"SELECT 1 FROM standalone_statement_payments WHERE household_id = ? AND idempotency_key = ?",
+			)
+			.get(this.household.id, key);
+		if (standaloneCollision) {
+			throw new WealthError("duplicate", "Idempotency key belongs to a standalone card payment.");
+		}
+
+		const existing = this.database.connection
+			.prepare("SELECT id FROM transactions WHERE household_id = ? AND idempotency_key = ?")
+			.get(this.household.id, key) as { id: string } | undefined;
+		if (existing) return { transaction: this.getTransaction(existing.id), duplicate: true };
+		return undefined;
+	}
+
 	private mapTransaction(row: TransactionRow): LedgerTransaction {
 		const postingRows = this.database.connection
 			.prepare(
@@ -895,10 +1072,12 @@ export class WealthService {
 		};
 	}
 
-	private getCardStatementRow(statementId: string): CardStatementRow | undefined {
+	private getCardStatementRow(statementId: string, asOf: string): CardStatementRow | undefined {
 		return this.database.connection
 			.prepare(cardStatementQuery("WHERE s.id = ? AND a.household_id = ?", ""))
-			.get(statementId, this.household.id) as unknown as CardStatementRow | undefined;
+			.get(paymentCutoff(asOf), paymentCutoff(asOf), statementId, this.household.id) as unknown as
+			| CardStatementRow
+			| undefined;
 	}
 
 	private getTrackedAssetByAccount(accountId: string): TrackedAsset | undefined {
@@ -946,10 +1125,70 @@ export class WealthService {
 		return row.balance_minor;
 	}
 
+	private getMaximumAccountBalanceFromTimestamp(accountId: string, occurredAt: string): number {
+		const row = this.database.connection
+			.prepare(
+				`WITH account_deltas AS (
+					SELECT t.occurred_at, SUM(p.amount_minor) AS amount_minor
+					FROM postings AS p
+					JOIN transactions AS t ON t.id = p.transaction_id
+					JOIN accounts AS a ON a.id = p.account_id
+					WHERE p.account_id = ? AND a.household_id = ?
+					GROUP BY t.occurred_at
+				), account_balances AS (
+					SELECT occurred_at,
+						SUM(amount_minor) OVER (ORDER BY occurred_at) AS balance_minor
+					FROM account_deltas
+				), relevant_balances AS (
+					SELECT COALESCE((
+						SELECT balance_minor
+						FROM account_balances
+						WHERE occurred_at <= ?
+						ORDER BY occurred_at DESC
+						LIMIT 1
+					), 0) AS balance_minor
+					UNION ALL
+					SELECT balance_minor
+					FROM account_balances
+					WHERE occurred_at >= ?
+				)
+				SELECT COALESCE(MAX(balance_minor), 0) AS balance_minor
+				FROM relevant_balances`,
+			)
+			.get(accountId, this.household.id, occurredAt, occurredAt) as { balance_minor: number };
+		return row.balance_minor;
+	}
+
 	private requirePositiveAmount(amount: string, currency: string): number {
 		const amountMinor = parseDecimalAmount(amount, currency);
 		if (amountMinor <= 0) throw new WealthError("invalid_amount", "Amount must be greater than zero.");
 		return amountMinor;
+	}
+
+	private requirePaymentWithinStatementBalance(amountMinor: number, statement: CardStatement): void {
+		const paidAmountMinor =
+			statement.accountingMode === "integrated"
+				? (
+						this.database.connection
+							.prepare(
+								"SELECT COALESCE(SUM(amount_minor), 0) AS amount_minor FROM statement_payments WHERE statement_id = ?",
+							)
+							.get(statement.id) as { amount_minor: number }
+					).amount_minor
+				: (
+						this.database.connection
+							.prepare(
+								"SELECT COALESCE(SUM(amount_minor), 0) AS amount_minor FROM standalone_statement_payments WHERE statement_id = ?",
+							)
+							.get(statement.id) as { amount_minor: number }
+					).amount_minor;
+		const outstandingAmountMinor = statement.statementAmountMinor - paidAmountMinor;
+		if (amountMinor > outstandingAmountMinor) {
+			throw new WealthError(
+				"invalid_amount",
+				`Payment ${formatDecimalAmount(amountMinor, statement.currency)} exceeds outstanding amount ${formatDecimalAmount(outstandingAmountMinor, statement.currency)}.`,
+			);
+		}
 	}
 
 	private requireAccountType(account: Account, expected: AccountType[], role: string): void {
@@ -1038,8 +1277,8 @@ function currentDate(): string {
 	return new Date().toISOString().slice(0, 10);
 }
 
-function timestampDate(value: string | undefined): string {
-	return normalizeTimestamp(value).slice(0, 10);
+function paymentCutoff(asOf: string): string {
+	return `${addDays(asOf, 1)}T00:00:00.000Z`;
 }
 
 function daysBetween(fromDate: string, toDate: string): number {
@@ -1051,13 +1290,25 @@ function daysBetween(fromDate: string, toDate: string): number {
 function cardStatementQuery(where: string, order: string): string {
 	return `SELECT s.id, s.card_account_id, a.name AS card_account_name,
 			s.period_start, s.period_end, s.statement_date, s.due_date, s.currency,
-			s.statement_amount_minor, s.minimum_payment_minor, s.created_at,
-			COALESCE(SUM(sp.amount_minor), 0) AS paid_amount_minor
+			s.statement_amount_minor, s.minimum_payment_minor, s.accounting_mode, s.created_at,
+			CASE s.accounting_mode
+				WHEN 'integrated' THEN (
+					SELECT COALESCE(SUM(sp.amount_minor), 0)
+					FROM statement_payments AS sp
+					JOIN transactions AS payment_transaction ON payment_transaction.id = sp.transaction_id
+					WHERE sp.statement_id = s.id
+						AND payment_transaction.occurred_at < ?
+				)
+				ELSE (
+					SELECT COALESCE(SUM(ssp.amount_minor), 0)
+					FROM standalone_statement_payments AS ssp
+					WHERE ssp.statement_id = s.id
+						AND ssp.occurred_at < ?
+				)
+			END AS paid_amount_minor
 		FROM credit_card_statements AS s
 		JOIN accounts AS a ON a.id = s.card_account_id
-		LEFT JOIN statement_payments AS sp ON sp.statement_id = s.id
 		${where}
-		GROUP BY s.id
 		${order}`;
 }
 
@@ -1085,6 +1336,7 @@ function mapCardStatement(row: CardStatementRow, asOf: string): CardStatement {
 		statementAmount: formatDecimalAmount(row.statement_amount_minor, row.currency),
 		minimumPaymentMinor: row.minimum_payment_minor,
 		minimumPayment: formatDecimalAmount(row.minimum_payment_minor, row.currency),
+		accountingMode: row.accounting_mode,
 		paidAmountMinor,
 		paidAmount: formatDecimalAmount(paidAmountMinor, row.currency),
 		outstandingAmountMinor,
@@ -1092,6 +1344,26 @@ function mapCardStatement(row: CardStatementRow, asOf: string): CardStatement {
 		status,
 		daysUntilDue,
 		createdAt: row.created_at,
+	};
+}
+
+function mapStandaloneStatementPayment(
+	row: StandaloneStatementPaymentRow,
+	currency: string,
+	duplicate: boolean,
+): LightweightCardPayment {
+	return {
+		accountingMode: "lightweight",
+		id: row.id,
+		householdId: row.household_id,
+		statementId: row.statement_id,
+		amountMinor: row.amount_minor,
+		amount: formatDecimalAmount(row.amount_minor, currency),
+		occurredAt: row.occurred_at,
+		createdAt: row.created_at,
+		duplicate,
+		...(row.funding_account_id ? { fundingAccountId: row.funding_account_id } : {}),
+		...(row.idempotency_key ? { idempotencyKey: row.idempotency_key } : {}),
 	};
 }
 

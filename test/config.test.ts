@@ -31,6 +31,7 @@ test("uses defaults when the default JSON configuration file is absent", (contex
 		timezone: "Asia/Hong_Kong",
 		provider: "openai",
 		thinkingLevel: "low",
+		cardTrackingMode: "lightweight",
 	});
 });
 
@@ -50,6 +51,7 @@ test("loads common settings from a JSON file", (context) => {
 			provider: "anthropic",
 			model: "example-model",
 			thinkingLevel: "high",
+			cardTrackingMode: "integrated",
 		}),
 	);
 
@@ -66,6 +68,7 @@ test("loads common settings from a JSON file", (context) => {
 		provider: "anthropic",
 		model: "example-model",
 		thinkingLevel: "high",
+		cardTrackingMode: "integrated",
 	});
 });
 
@@ -85,6 +88,7 @@ test("environment variables override individual JSON settings", (context) => {
 			provider: "anthropic",
 			model: "file-model",
 			thinkingLevel: "minimal",
+			cardTrackingMode: "lightweight",
 		}),
 	);
 
@@ -102,6 +106,7 @@ test("environment variables override individual JSON settings", (context) => {
 			HWM_PROVIDER: "google",
 			HWM_MODEL: "environment-model",
 			HWM_THINKING_LEVEL: "xhigh",
+			HWM_CARD_TRACKING_MODE: "integrated",
 		},
 	});
 
@@ -115,15 +120,21 @@ test("environment variables override individual JSON settings", (context) => {
 	assert.equal(config.provider, "google");
 	assert.equal(config.model, "environment-model");
 	assert.equal(config.thinkingLevel, "xhigh");
+	assert.equal(config.cardTrackingMode, "integrated");
 });
 
-test("atomically patches only non-secret runtime settings and preserves other JSON values", (context) => {
+test("atomically patches writable non-secret settings and preserves other JSON values", (context) => {
 	const directory = createDirectory(context);
 	const path = join(directory, "nested", "config.json");
 
 	patchApplicationConfig(
 		path,
-		{ provider: "openai-codex", model: "gpt-5.6-sol", thinkingLevel: "medium" },
+		{
+			provider: "openai-codex",
+			model: "gpt-5.6-sol",
+			thinkingLevel: "medium",
+			cardTrackingMode: "integrated",
+		},
 		{ env: {} },
 	);
 	const firstWrite = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
@@ -131,6 +142,7 @@ test("atomically patches only non-secret runtime settings and preserves other JS
 		provider: "openai-codex",
 		model: "gpt-5.6-sol",
 		thinkingLevel: "medium",
+		cardTrackingMode: "integrated",
 	});
 	assert.equal(statSync(path).mode & 0o777, 0o600);
 
@@ -143,12 +155,13 @@ test("atomically patches only non-secret runtime settings and preserves other JS
 		provider: "openai-codex",
 		model: "gpt-5.5",
 		thinkingLevel: "medium",
+		cardTrackingMode: "integrated",
 		householdName: "Preserved Household",
 		timezone: "Asia/Tokyo",
 	});
 });
 
-test("rejects runtime patches that are overridden by environment variables", (context) => {
+test("rejects writable settings that are overridden by environment variables", (context) => {
 	const directory = createDirectory(context);
 	const path = join(directory, "config.json");
 	writeFileSync(path, JSON.stringify({ provider: "openai", model: "gpt-4.1" }));
@@ -165,6 +178,15 @@ test("rejects runtime patches that are overridden by environment variables", (co
 				{ env: { HWM_THINKING_LEVEL: "low" } },
 			),
 		/HWM_THINKING_LEVEL/,
+	);
+	assert.throws(
+		() =>
+			patchApplicationConfig(
+				path,
+				{ cardTrackingMode: "integrated" },
+				{ env: { HWM_CARD_TRACKING_MODE: "lightweight" } },
+			),
+		/HWM_CARD_TRACKING_MODE/,
 	);
 	assert.throws(
 		() =>
@@ -208,6 +230,27 @@ test("rejects missing explicit files and invalid JSON settings", (context) => {
 	assert.throws(
 		() => loadApplicationConfig({ cwd: directory, env: { HWM_CONFIG_PATH: path } }),
 		/Unsupported thinking level/,
+	);
+
+	writeFileSync(path, JSON.stringify({ cardTrackingMode: "automatic" }));
+	assert.throws(
+		() => loadApplicationConfig({ cwd: directory, env: { HWM_CONFIG_PATH: path } }),
+		/Unsupported credit-card tracking mode/,
+	);
+
+	writeFileSync(path, JSON.stringify({ cardTrackingMode: "lightweight" }));
+	assert.throws(
+		() =>
+			loadApplicationConfig({
+				cwd: directory,
+				env: { HWM_CONFIG_PATH: path, HWM_CARD_TRACKING_MODE: "automatic" },
+			}),
+		/Unsupported credit-card tracking mode/,
+	);
+
+	assert.throws(
+		() => patchApplicationConfig(path, { cardTrackingMode: "automatic" as never }, { env: {} }),
+		/Unsupported credit-card tracking mode/,
 	);
 
 	writeFileSync(path, "not json");
