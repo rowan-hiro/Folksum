@@ -161,6 +161,14 @@ profile. Both `profile apply` and the agent's typed patch tool use the same
 application validator and optimistic revision check, so a stale file or
 conversation cannot silently overwrite a newer change.
 
+A private deployment may instead use the public bookkeeping DSL as a compact
+overlay on the active revision. The parser accepts only allow-listed category,
+field, rule, export, and removal declarations, then compiles them into the same
+profile patch model. It performs no includes, interpolation, SQL, templates, or
+code execution. `profile check-dsl` validates without mutation;
+`profile apply-dsl` explicitly activates the compiled full revision. Household
+values remain in the external DSL file rather than the public repository.
+
 Expense and income interpretation uses this precedence: an explicit category,
 the highest-priority matching categorization rule, then an account-binding
 lookup. Explicit custom-field values override rule assignments. Required fields,

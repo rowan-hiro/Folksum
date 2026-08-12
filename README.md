@@ -77,6 +77,22 @@ The agent can inspect and propose changes to the active profile, subject to
 application-owned confirmation, and can preview bounded exports. It has no tool
 that writes profile or export files.
 
+For smaller private overlays, Folksum also provides a non-executable bookkeeping
+DSL. A private file can upsert or remove categories, typed transaction fields,
+deterministic categorization rules, account bindings, and declarative exports
+without copying the complete built-in profile:
+
+```sh
+folksum profile check-dsl path/to/household.folksum
+folksum profile apply-dsl path/to/household.folksum
+```
+
+The DSL carries an optimistic `expected-revision` and compiles through the same
+profile patch validator used by conversational changes. It has no includes,
+interpolation, SQL, templates, or executable code. See
+[`docs/bookkeeping-dsl.md`](docs/bookkeeping-dsl.md) for the grammar and the
+public/private customization boundary.
+
 ## Build from source
 
 ```sh

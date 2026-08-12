@@ -75,3 +75,10 @@ Confirmed in migration and user documentation: schema version 8 owns immutable s
 Status: Accepted → Accepted
 
 Confirmed after final hardening: profile activation performs validation and optimistic revision checks under one immediate SQLite transaction, stored hashes and account/profile references are verified, custom fields are limited to the implemented transaction scope, and preview/file outputs remain bounded declarative projections.
+
+<!-- driftseal-reconciliation: e3763398-fc7e-43ba-97c4-fc33ad529d0b -->
+### 2026-08-12T15:33:04.072Z — Intent `2026-08-12-025`
+
+Status: Accepted → Accepted
+
+Confirmed after adding the public bookkeeping DSL: private text overlays compile into the existing semantic profile patch, validation, immutable revision, and optimistic concurrency path; no executable extension point or second runtime source of truth was introduced.

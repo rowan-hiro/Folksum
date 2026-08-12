@@ -142,13 +142,16 @@ npm run reminders
 npm run schedule
 ```
 
-Bookkeeping profiles use revision-aware JSON documents. These commands inspect,
-export, and explicitly apply them; data exports use a named declarative profile:
+Bookkeeping profiles use revision-aware JSON documents or constrained DSL
+overlays. These commands inspect, export, validate, and explicitly apply them;
+data exports use a named declarative profile:
 
 ```sh
 folksum profile show
 folksum profile export .data/bookkeeping-profile.json
 folksum profile apply .data/bookkeeping-profile.json
+folksum profile check-dsl .data/bookkeeping.folksum
+folksum profile apply-dsl .data/bookkeeping.folksum
 folksum export <profile-id> <from> <to> [output-path]
 ```
 

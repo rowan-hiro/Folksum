@@ -9,6 +9,8 @@ import { BookkeepingProfileService } from "../app/bookkeeping-profile.ts";
 import { BookkeepingExportService } from "../app/bookkeeping-export.ts";
 import {
 	DEFAULT_BOOKKEEPING_PROFILE_PATH,
+	DEFAULT_BOOKKEEPING_DSL_PATH,
+	readBookkeepingDslFile,
 	readBookkeepingProfileFile,
 	serializeBookkeepingProfileFile,
 	writeBookkeepingExportFile,
@@ -253,7 +255,43 @@ function runProfileCommand(
 		);
 		return;
 	}
-	throw new Error("Usage: folksum profile show | export [path] [--force] | apply [path]");
+	if (action === "check-dsl" || action === "apply-dsl") {
+		if (force || positional.length > 2) {
+			throw new Error(`Usage: folksum profile ${action} [path]`);
+		}
+		const path = positional[1] ?? DEFAULT_BOOKKEEPING_DSL_PATH;
+		const active = profiles.getActiveProfile(scope.householdId);
+		const compiled = readBookkeepingDslFile(path, active.profile, process.cwd(), active.revision);
+		if (action === "check-dsl") {
+			console.log(
+				JSON.stringify({
+					status: "valid",
+					expectedRevision: compiled.document.expectedRevision,
+					categories: compiled.profile.categories.length,
+					customFields: compiled.profile.customFields.length,
+					categorizationRules: compiled.profile.categorizationRules.length,
+					exportProfiles: compiled.profile.exportProfiles.length,
+				}),
+			);
+			return;
+		}
+		const result = profiles.activateProfile(scope, {
+			profile: compiled.profile,
+			expectedRevision: compiled.document.expectedRevision,
+			source: "import",
+		});
+		console.log(
+			JSON.stringify({
+				status: result.duplicate ? "unchanged" : "activated",
+				revision: result.active.revision,
+				profileHash: result.active.profileHash,
+			}),
+		);
+		return;
+	}
+	throw new Error(
+		"Usage: folksum profile show | export [path] [--force] | apply [path] | check-dsl [path] | apply-dsl [path]",
+	);
 }
 
 function runExportCommand(

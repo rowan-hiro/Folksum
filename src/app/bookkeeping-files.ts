@@ -11,6 +11,11 @@ import { dirname, resolve } from "node:path";
 
 import type { BookkeepingExportArtifact } from "./bookkeeping-export.ts";
 import {
+	compileBookkeepingDsl,
+	parseBookkeepingDsl,
+	type BookkeepingDslDocument,
+} from "./bookkeeping-dsl.ts";
+import {
 	BookkeepingProfileError,
 	parseBookkeepingProfileJson,
 	type ActiveBookkeepingProfile,
@@ -19,6 +24,7 @@ import {
 
 export const BOOKKEEPING_PROFILE_FILE_FORMAT_VERSION = 1 as const;
 export const DEFAULT_BOOKKEEPING_PROFILE_PATH = ".data/bookkeeping-profile.json";
+export const DEFAULT_BOOKKEEPING_DSL_PATH = ".data/bookkeeping.folksum";
 
 export interface BookkeepingProfileFileDocument {
 	fileFormatVersion: typeof BOOKKEEPING_PROFILE_FILE_FORMAT_VERSION;
@@ -98,6 +104,35 @@ export function readBookkeepingProfileFile(path: string, cwd = process.cwd()): B
 		throw new BookkeepingFileError(`Could not read bookkeeping profile file ${resolvedPath}: ${reason}`);
 	}
 	return parseBookkeepingProfileFile(text, resolvedPath);
+}
+
+export function readBookkeepingDslFile(
+	path: string,
+	baseProfile: BookkeepingProfile,
+	cwd = process.cwd(),
+	activeRevision?: number,
+): { document: BookkeepingDslDocument; profile: BookkeepingProfile } {
+	const resolvedPath = resolve(cwd, path);
+	let text: string;
+	try {
+		text = readFileSync(resolvedPath, "utf8");
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : String(error);
+		throw new BookkeepingFileError(`Could not read bookkeeping DSL file ${resolvedPath}: ${reason}`);
+	}
+	try {
+		const document = parseBookkeepingDsl(text, resolvedPath);
+		if (activeRevision !== undefined && document.expectedRevision !== activeRevision) {
+			throw new BookkeepingFileError(
+				`Bookkeeping DSL revision conflict: expected ${document.expectedRevision}, active revision is ${activeRevision}.`,
+			);
+		}
+		return compileBookkeepingDsl(text, baseProfile, resolvedPath);
+	} catch (error) {
+		if (error instanceof BookkeepingFileError) throw error;
+		const reason = error instanceof Error ? error.message : String(error);
+		throw new BookkeepingFileError(reason);
+	}
 }
 
 export function writeBookkeepingProfileFile(
