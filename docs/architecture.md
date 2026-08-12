@@ -208,6 +208,118 @@ one currency. A currency conversion is represented as two linked balanced
 transactions plus explicit rate metadata; conversion entry is outside the MVP.
 Net-worth and spending reports return a map keyed by currency.
 
+### 4.4 Planned SQLite ledger integrity boundary (schema version 7)
+
+This section is the target design for the next schema migration, not a description
+of schema version 6. Version 6 validates transaction balance in `WealthService`
+and relies on the absence of mutation APIs for immutability, while SQLite only
+checks posting amount, foreign-key existence, and account household/currency
+during posting insertion. Version 7 moves the irreducible ledger invariants into
+SQLite as a second line of defense against application bugs and accidental direct
+SQL.
+
+The database boundary will enforce all of the following:
+
+- every posted transaction has at least two non-zero integer postings;
+- postings sum to exactly zero using SQLite integer arithmetic;
+- the transaction, every posting account, and every posting share one household
+  and currency;
+- no posting can be appended after its transaction header is posted;
+- transaction headers and postings cannot be updated or deleted; and
+- an account's household, currency, and type cannot change after the account has
+  a posting.
+
+The application still validates these rules before writing so it can return
+domain-specific errors. It must sum safe-integer posting amounts with `BigInt`,
+not JavaScript `number`, to avoid cancellation near the safe-integer boundary.
+Database validation is authoritative if application validation is bypassed.
+SQLite `SUM` remains an integer operation: integer overflow aborts the write
+instead of falling back to an approximate floating-point total.
+
+#### 4.4.1 Schema shape and write protocol
+
+Version 7 will denormalize `household_id` and `currency` onto `postings` and use
+composite foreign keys to bind those values to both parents:
+
+```text
+postings(transaction_id, household_id, currency)
+  -> transactions(id, household_id, currency)
+     DEFERRABLE INITIALLY DEFERRED
+
+postings(account_id, household_id, currency)
+  -> accounts(id, household_id, currency)
+```
+
+Matching unique indexes on the parent column sets make these valid SQLite parent
+keys. The transaction foreign key is deferred so a writer can construct a
+complete journal entry before publishing its immutable header. The account
+foreign key remains immediate so an invalid account scope fails at the posting
+that introduced it. Each posting also receives an explicit zero-based `ordinal`;
+reads order by it instead of relying on SQLite `rowid`.
+
+All ledger writers use one central protocol:
+
+1. Start `BEGIN IMMEDIATE` and perform the full application validation, including
+   a `BigInt` balance check.
+2. Generate the transaction identifier, then insert every posting with its
+   household, currency, and ordinal while the deferred transaction parent is
+   temporarily absent.
+3. Insert the transaction header last. An `AFTER INSERT` trigger rejects fewer
+   than two postings, a non-zero integer sum, or a household/currency mismatch.
+4. Insert any dependent domain record, such as a statement-payment allocation,
+   in the same outer transaction.
+5. Commit. Deferred foreign-key validation closes the orphan-posting gap; any
+   trigger, uniqueness, dependent-write, or commit failure rolls back the entire
+   operation.
+
+A `BEFORE INSERT` trigger on `postings` rejects an insert when its transaction
+header already exists. Separate `BEFORE UPDATE` and `BEFORE DELETE` triggers make
+both `transactions` and `postings` immutable. An account trigger freezes
+`household_id`, `currency`, and `type` once any posting references the account.
+Existing idempotency-key uniqueness, reversal links, and `ON DELETE RESTRICT`
+relationships remain unchanged.
+
+#### 4.4.2 Migration and failure policy
+
+The version 6 to 7 migration runs as one transaction and fails closed. Before
+changing the schema it checks every existing transaction for posting count,
+integer balance, parent existence, household equality, and currency equality.
+Invalid historical data is never repaired, rounded, deleted, or balanced with a
+synthetic posting; the migration reports the violated invariant and leaves the
+database at version 6.
+
+The migration rebuilds `postings` to add the deferred composite key and new
+columns, but avoids rebuilding `transactions`, which is already referenced by
+reversals and statement payments. It derives each posting's stable ordinal from
+the previous per-transaction `rowid` order and preserves all posting identifiers
+and values. Replacement triggers and indexes are installed after the copy. The
+migration runs `PRAGMA foreign_key_check`, advances `user_version` only after all
+checks pass, and commits atomically. Every process opening the database must
+continue to enable `PRAGMA foreign_keys = ON` for its connection.
+
+Automated acceptance tests must prove:
+
+- a valid version 6 file containing ordinary entries, a reversal, and an
+  allocated card payment migrates without changing identifiers, balances,
+  posting order, or payment links;
+- an unbalanced, underspecified, orphaned, or cross-household/currency version 6
+  database fails migration without changing its schema version or contents;
+- direct SQL cannot commit an orphan, a zero- or one-posting transaction, an
+  unbalanced entry, a cross-scope entry, or a posting appended to a published
+  transaction;
+- direct SQL cannot update or delete transactions/postings or reclassify an
+  account that has postings, and every rejected operation leaves no partial
+  state;
+- all service paths, including opening balances, income, expenses, transfers,
+  reversals, and card-payment allocation, still commit atomically; and
+- the pathological posting set `[MAX_SAFE_INTEGER, 2, -MAX_SAFE_INTEGER, -1]`
+  is rejected because its exact sum is one, and a SQLite integer-sum overflow
+  also fails closed.
+
+These controls protect the database from faulty or unintended application SQL.
+They do not attempt to defend against an administrator who can replace the
+database file, disable foreign-key enforcement, or drop schema triggers.
+
 ## 5. Credit-card statements and reminders
 
 A credit card is a liability account with statement settings. A statement stores:
