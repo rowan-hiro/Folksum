@@ -2,6 +2,8 @@ import type { CardTrackingMode } from "./card-tracking.ts";
 
 export type AccountType = "asset" | "liability" | "income" | "expense" | "equity";
 export type TransactionSource = "agent" | "manual" | "import" | "system";
+export type TransactionCustomFieldValue = string | boolean | number;
+export type BookkeepingResolutionSource = "explicit" | "rule" | "account_binding" | "unclassified" | "reversal";
 
 export interface Household {
 	id: string;
@@ -44,6 +46,21 @@ export interface LedgerTransaction {
 	reversalOf?: string;
 	createdAt: string;
 	postings: Posting[];
+	bookkeeping?: TransactionBookkeepingMetadata;
+}
+
+export interface RecordTransactionBookkeepingInput {
+	profileRevision: number;
+	profileHash: string;
+	categoryId?: string;
+	categoryLabel?: string;
+	categorizationRuleId?: string;
+	customFields: Readonly<Record<string, TransactionCustomFieldValue>>;
+	resolutionSource: BookkeepingResolutionSource;
+}
+
+export interface TransactionBookkeepingMetadata extends RecordTransactionBookkeepingInput {
+	createdAt: string;
 }
 
 export interface PostedTransaction {

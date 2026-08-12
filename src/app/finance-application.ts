@@ -1,5 +1,7 @@
 import type { Account } from "../core/types.ts";
 import { WealthService } from "../core/wealth-service.ts";
+import { BookkeepingProfileService } from "./bookkeeping-profile.ts";
+import { BookkeepingExportService } from "./bookkeeping-export.ts";
 import { ConfirmationStore, type PendingOperation } from "./confirmation.ts";
 import { getFinanceRisk, isFinanceReadIr, type FinanceIr, type FinanceRisk } from "./finance-ir.ts";
 import type { IdentityScope } from "./identity.ts";
@@ -28,15 +30,20 @@ export type FinanceApplicationResult =
 export class FinanceApplication {
 	private readonly wealth: WealthService;
 	private readonly confirmations: ConfirmationStore;
+	private readonly profiles: BookkeepingProfileService | undefined;
+	private readonly exports: BookkeepingExportService | undefined;
 	private readonly policy: ConfirmationPolicy;
 
 	constructor(
 		wealth: WealthService,
 		confirmations: ConfirmationStore,
 		policy: ConfirmationPolicy = new DefaultConfirmationPolicy(),
+		profiles?: BookkeepingProfileService,
 	) {
 		this.wealth = wealth;
 		this.confirmations = confirmations;
+		this.profiles = profiles;
+		this.exports = profiles ? new BookkeepingExportService(wealth, profiles) : undefined;
 		this.policy = policy;
 	}
 
@@ -55,13 +62,13 @@ export class FinanceApplication {
 				summary: summarizeFinanceIr(ir),
 			};
 		}
-		return { status: "executed", risk, ir, result: this.execute(ir) };
+		return { status: "executed", risk, ir, result: this.execute(ir, scope) };
 	}
 
 	confirm(confirmationToken: string, scope: IdentityScope): FinanceApplicationResult {
 		const operation = this.confirmations.consume(confirmationToken, scope);
 		try {
-			const result = this.execute(operation.ir);
+			const result = this.execute(operation.ir, scope);
 			this.confirmations.markExecuted(operation.id);
 			return { status: "executed", risk: operation.risk, ir: operation.ir, result };
 		} catch (error) {
@@ -88,7 +95,7 @@ export class FinanceApplication {
 		}
 	}
 
-	private execute(ir: FinanceIr): unknown {
+	private execute(ir: FinanceIr, scope: IdentityScope): unknown {
 		switch (ir.kind) {
 			case "list_accounts":
 				return this.wealth.listAccounts();
@@ -100,12 +107,22 @@ export class FinanceApplication {
 				return this.wealth.getNetWorth(ir.payload.asOf);
 			case "get_spending_summary":
 				return this.wealth.getSpendingSummary(ir.payload.from, ir.payload.to);
+			case "get_bookkeeping_profile":
+				return this.requireProfiles().getActiveProfile(ir.householdId);
+			case "preview_bookkeeping_export":
+				return this.requireExports().preview({
+					householdId: ir.householdId,
+					exportProfileId: ir.payload.exportProfileId,
+					from: ir.payload.from,
+					to: ir.payload.to,
+					...(ir.payload.limit === undefined ? {} : { limit: ir.payload.limit }),
+				});
 			case "create_account":
 				return this.wealth.createAccount(ir.payload);
 			case "record_expense":
-				return this.wealth.recordExpense({ ...ir.payload, idempotencyKey: ir.idempotencyKey });
+				return this.recordExpense(ir);
 			case "record_income":
-				return this.wealth.recordIncome({ ...ir.payload, idempotencyKey: ir.idempotencyKey });
+				return this.recordIncome(ir);
 			case "record_transfer":
 				return this.wealth.recordTransfer({ ...ir.payload, idempotencyKey: ir.idempotencyKey });
 			case "reverse_transaction":
@@ -118,7 +135,71 @@ export class FinanceApplication {
 				return this.wealth.registerAsset(ir.payload);
 			case "record_asset_valuation":
 				return this.wealth.recordAssetValuation(ir.payload);
+			case "update_bookkeeping_profile":
+				return this.requireProfiles().patchProfile(scope, {
+					patch: ir.payload.patch,
+					expectedRevision: ir.payload.expectedRevision,
+					source: ir.source === "agent" ? "agent" : "user",
+				});
 		}
+	}
+
+	private requireProfiles(): BookkeepingProfileService {
+		if (!this.profiles) throw new Error("Bookkeeping profile service is not configured.");
+		return this.profiles;
+	}
+
+	private requireExports(): BookkeepingExportService {
+		if (!this.exports) throw new Error("Bookkeeping export service is not configured.");
+		return this.exports;
+	}
+
+	private recordExpense(ir: Extract<FinanceIr, { kind: "record_expense" }>): unknown {
+		const duplicate = this.wealth.findLedgerTransactionByIdempotencyKey(ir.idempotencyKey);
+		if (duplicate) return duplicate;
+		const { categoryId, customFields, expenseAccountId, ...payload } = ir.payload;
+		if (!this.profiles) {
+			if (!expenseAccountId) throw new Error("Expense account id is required without a bookkeeping profile service.");
+			return this.wealth.recordExpense({ ...payload, expenseAccountId, idempotencyKey: ir.idempotencyKey });
+		}
+		const funding = this.wealth.getAccount(payload.fundingAccountId);
+		const resolved = this.profiles.resolveTransaction({
+			householdId: ir.householdId,
+			transactionKind: "expense",
+			description: payload.description,
+			currency: funding.currency,
+			...(expenseAccountId ? { accountId: expenseAccountId } : {}),
+			...(categoryId ? { categoryId } : {}),
+			...(customFields ? { customFields } : {}),
+		});
+		return this.wealth.recordExpense(
+			{ ...payload, expenseAccountId: resolved.accountId, idempotencyKey: ir.idempotencyKey },
+			resolved.bookkeeping,
+		);
+	}
+
+	private recordIncome(ir: Extract<FinanceIr, { kind: "record_income" }>): unknown {
+		const duplicate = this.wealth.findLedgerTransactionByIdempotencyKey(ir.idempotencyKey);
+		if (duplicate) return duplicate;
+		const { categoryId, customFields, incomeAccountId, ...payload } = ir.payload;
+		if (!this.profiles) {
+			if (!incomeAccountId) throw new Error("Income account id is required without a bookkeeping profile service.");
+			return this.wealth.recordIncome({ ...payload, incomeAccountId, idempotencyKey: ir.idempotencyKey });
+		}
+		const destination = this.wealth.getAccount(payload.destinationAccountId);
+		const resolved = this.profiles.resolveTransaction({
+			householdId: ir.householdId,
+			transactionKind: "income",
+			description: payload.description,
+			currency: destination.currency,
+			...(incomeAccountId ? { accountId: incomeAccountId } : {}),
+			...(categoryId ? { categoryId } : {}),
+			...(customFields ? { customFields } : {}),
+		});
+		return this.wealth.recordIncome(
+			{ ...payload, incomeAccountId: resolved.accountId, idempotencyKey: ir.idempotencyKey },
+			resolved.bookkeeping,
+		);
 	}
 }
 
@@ -134,6 +215,8 @@ function summarizeFinanceIr(ir: FinanceIr): string {
 			return `Register ${ir.payload.kind} asset.`;
 		case "record_asset_valuation":
 			return `Record asset valuation of ${ir.payload.amount} on ${ir.payload.valuedAt}.`;
+		case "update_bookkeeping_profile":
+			return `Update bookkeeping profile revision ${ir.payload.expectedRevision}.`;
 		case "reverse_transaction":
 			return `Reverse transaction ${ir.payload.transactionId}.`;
 		case "record_card_payment":

@@ -71,6 +71,9 @@ test("isolates Pi model imports to the runtime adapter and Pi TUI imports to its
 test("exposes the documented finance tool surface through the Pi adapter", () => {
 	const source = readFileSync(join(projectRoot, "src/runtime/pi/tools.ts"), "utf8");
 	const expectedTools = [
+		"get_bookkeeping_profile",
+		"update_bookkeeping_profile",
+		"preview_bookkeeping_export",
 		"create_account",
 		"list_accounts",
 		"record_expense",

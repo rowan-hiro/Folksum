@@ -40,6 +40,43 @@ folksum reminders
 folksum schedule
 ```
 
+## Bookkeeping profiles and exports
+
+Folksum ships a pinned `folksum/default@1` semantic bookkeeping profile. A
+household can customize categories, currency-specific account bindings, typed
+transaction fields, deterministic categorization rules, and declarative CSV or
+JSON export profiles. These definitions never alter the physical ledger schema
+or its accounting invariants.
+
+The active profile is an immutable SQLite revision. Export an editable,
+revision-aware JSON document, change it, and apply it through the same validation
+path used by the conversational agent:
+
+```sh
+folksum profile show
+folksum profile export .data/bookkeeping-profile.json
+# Edit .data/bookkeeping-profile.json.
+folksum profile apply .data/bookkeeping-profile.json
+```
+
+`expectedRevision` in the file prevents an old file from overwriting a newer
+agent or file update. Profile and data export commands refuse to replace an
+existing output file unless `--force` is explicitly supplied.
+
+An export profile selects transaction or posting rows, allow-listed columns,
+filters, reversal handling, and the debit/credit sign convention. It cannot
+contain SQL, JavaScript, shell commands, or executable templates. Render to
+standard output or provide a private output file:
+
+```sh
+folksum export accountant.csv 2026-01-01 2026-12-31
+folksum export accountant.csv 2026-01-01 2026-12-31 exports/2026.csv
+```
+
+The agent can inspect and propose changes to the active profile, subject to
+application-owned confirmation, and can preview bounded exports. It has no tool
+that writes profile or export files.
+
 ## Build from source
 
 ```sh

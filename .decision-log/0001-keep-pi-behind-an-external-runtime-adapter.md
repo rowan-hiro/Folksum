@@ -78,3 +78,31 @@ Confirmed the external Pi boundary after installing and locking the published 0.
 Status: Accepted → Accepted
 
 Confirmed for the release package: TypeScript emits only Home Wealth Agent code, bare published @earendil-works/pi-* imports remain external, npm installs exact Pi runtime dependencies, and package verification rejects bundled or vendored Pi contents.
+
+<!-- driftseal-reconciliation: d80f5177-ae86-4f90-8309-76bc1ae1b8c6 -->
+### 2026-08-12T13:50:54.957Z — Intent `2026-08-12-018`
+
+Status: Accepted → Accepted
+
+Confirmed while adding bookkeeping profile tools: Pi exposes only typed finance/profile tools through src/runtime/pi, while validation, revision checks, confirmation, and persistence remain application-owned with no Pi types in the profile service.
+
+<!-- driftseal-reconciliation: 46e0685b-7d3a-4567-94c0-f0c3cde05918 -->
+### 2026-08-12T13:55:29.340Z — Intent `2026-08-12-019`
+
+Status: Accepted → Accepted
+
+Confirmed while connecting profiles to transaction recording: Pi still submits typed Finance IR only; deterministic category resolution, custom-field validation, idempotency, atomic ledger metadata persistence, and reversals are application/core responsibilities.
+
+<!-- driftseal-reconciliation: f29b3f29-e2a6-4405-a502-5168c9a7695e -->
+### 2026-08-12T14:00:34.907Z — Intent `2026-08-12-020`
+
+Status: Accepted → Accepted
+
+Confirmed for export previews: Pi can request only a typed read-only Finance IR operation, while deterministic projection, filtering, exact amount formatting, and code-free rendering remain in an application service.
+
+<!-- driftseal-reconciliation: 3f8e2334-d74a-47db-8a37-2bba6f1189fc -->
+### 2026-08-12T14:13:58.539Z — Intent `2026-08-12-023`
+
+Status: Accepted → Accepted
+
+Confirmed during final hardening: profile edits and export previews remain typed Finance IR operations, while transaction-only field validation, revision/hash/reference enforcement, preview byte bounds, and CSV safety stay in application/core code outside Pi.

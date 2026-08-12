@@ -143,7 +143,42 @@ author, provenance, creation time, and optional expiry. Free-form conversation
 summaries may help the model but never override typed financial or confirmation
 rules.
 
-### 3.5 Pi dependency boundary
+### 3.5 Bookkeeping profiles and exports
+
+Folksum provides a pinned `folksum/default@1` semantic profile. A household may
+activate complete, validated revisions containing category hierarchies,
+currency-specific category-to-account bindings, typed custom fields,
+deterministic description rules, and declarative export profiles. User profiles
+cannot add SQLite columns, redefine account types, introduce Finance IR kinds,
+or weaken exact-money, balance, currency, confirmation, idempotency, or reversal
+rules.
+
+The active SQLite revision is the runtime source of truth. Revisions contain a
+normalized full profile, SHA-256 hash, author, source, and monotonically
+increasing household revision number; revision rows are immutable. An editable
+JSON file contains `fileFormatVersion`, `expectedRevision`, and the complete
+profile. Both `profile apply` and the agent's typed patch tool use the same
+application validator and optimistic revision check, so a stale file or
+conversation cannot silently overwrite a newer change.
+
+Expense and income interpretation uses this precedence: an explicit category,
+the highest-priority matching categorization rule, then an account-binding
+lookup. Explicit custom-field values override rule assignments. Required fields,
+field types, category kind, household, currency, and account bindings are
+validated before a ledger write. The transaction stores the applied profile
+revision/hash, category id and label, matched rule, custom fields, and resolution
+source atomically with its postings. Idempotent retries retain the original
+snapshot; reversals copy it and identify reversal resolution rather than
+reclassifying against the current profile.
+
+Export profiles are a non-executable projection DSL. They select transaction or
+posting row mode, CSV or JSON, allow-listed columns, category/account/source
+filters, reversal handling, and an explicit debit/credit sign convention.
+Amounts are formatted directly from integer minor units. The model may request a
+bounded read-only preview, while arbitrary-path file writes remain available
+only through an explicit local CLI command.
+
+### 3.6 Pi dependency boundary
 
 `pi-agent-core` and `pi-ai` are external runtime dependencies. The Folksum Application
 imports their published package APIs through a narrow adapter. Application code
@@ -215,15 +250,16 @@ one currency. A currency conversion is represented as two linked balanced
 transactions plus explicit rate metadata; conversion entry is outside the MVP.
 Net-worth and spending reports return a map keyed by currency.
 
-### 4.4 Planned SQLite ledger integrity boundary (schema version 8)
+### 4.4 Planned SQLite ledger integrity boundary (schema version 9)
 
 This section is the target design for the next schema migration, not a description
-of schema version 7. Version 7 validates transaction balance in `WealthService`
+of schema version 8. Version 8 validates transaction balance in `WealthService`
 and relies on the absence of mutation APIs for immutability, while SQLite only
 checks posting amount, foreign-key existence, and account household/currency
-during posting insertion. Version 8 moves the irreducible ledger invariants into
-SQLite as a second line of defense against application bugs and accidental direct
-SQL.
+during posting insertion. Schema version 8 adds immutable bookkeeping profile
+revisions and transaction classification snapshots. Version 9 moves the
+irreducible ledger invariants into SQLite as a second line of defense against
+application bugs and accidental direct SQL.
 
 The database boundary will enforce all of the following:
 
@@ -245,7 +281,7 @@ instead of falling back to an approximate floating-point total.
 
 #### 4.4.1 Schema shape and write protocol
 
-Version 8 will denormalize `household_id` and `currency` onto `postings` and use
+Version 9 will denormalize `household_id` and `currency` onto `postings` and use
 composite foreign keys to bind those values to both parents:
 
 ```text
@@ -288,12 +324,12 @@ relationships remain unchanged.
 
 #### 4.4.2 Migration and failure policy
 
-The version 7 to 8 migration runs as one transaction and fails closed. Before
+The version 8 to 9 migration runs as one transaction and fails closed. Before
 changing the schema it checks every existing transaction for posting count,
 integer balance, parent existence, household equality, and currency equality.
 Invalid historical data is never repaired, rounded, deleted, or balanced with a
 synthetic posting; the migration reports the violated invariant and leaves the
-database at version 7.
+database at version 8.
 
 The migration rebuilds `postings` to add the deferred composite key and new
 columns, but avoids rebuilding `transactions`, which is already referenced by
@@ -306,10 +342,10 @@ continue to enable `PRAGMA foreign_keys = ON` for its connection.
 
 Automated acceptance tests must prove:
 
-- a valid version 7 file containing ordinary entries, a reversal, and an
+- a valid version 8 file containing ordinary entries, a reversal, and an
   allocated card payment migrates without changing identifiers, balances,
   posting order, or payment links;
-- an unbalanced, underspecified, orphaned, or cross-household/currency version 7
+- an unbalanced, underspecified, orphaned, or cross-household/currency version 8
   database fails migration without changing its schema version or contents;
 - direct SQL cannot commit an orphan, a zero- or one-posting transaction, an
   unbalanced entry, a cross-scope entry, or a posting appended to a published
@@ -466,6 +502,12 @@ login flow never enter SQLite sessions, model messages, tool arguments, or tool
 results. Login and logout are local TUI actions; the model can neither read nor
 mutate credentials.
 
+Bookkeeping profile files are explicit revision-aware import/export documents,
+not a second live configuration source. Active profile revisions and immutable
+per-transaction bookkeeping snapshots remain in SQLite. Local profile and data
+exports are created with private file permissions and refuse implicit overwrite;
+the model can preview an export but cannot choose or write a filesystem path.
+
 The runtime projects Pi messages onto an explicit persistence allowlist, omitting
 provider diagnostics, deferred handles, response identifiers, and tool details.
 The TUI strips terminal control sequences from all untrusted transcript text
@@ -482,6 +524,10 @@ deployment hardening.
 - An integrated statement payment, its ledger transaction, and its allocation
   commit atomically; a lightweight payment commits only its standalone allocation.
 - Validation failures do not partially mutate data.
+- A categorized ledger write and its applied profile metadata commit atomically.
+- Stale profile files or agent patches fail revision checks without activation.
+- Export definitions cannot execute code, and exact amounts never pass through
+  floating-point conversion.
 - The reminder runner is safe to invoke repeatedly.
 - Missing or stale valuations produce warnings, not fabricated estimates.
 - Missing provider credentials leave the TUI available for local login and
@@ -501,10 +547,12 @@ The first runnable version is complete when automated tests prove that:
 4. reminder boundaries distinguish future, due-today, paid, and overdue bills;
 5. net worth uses the latest eligible asset valuation and stays separated by
    currency;
-6. the Pi agent exposes only the documented finance tools; and
-7. the CLI can run local reminder checks without an LLM API key; and
+6. the Pi agent exposes only the documented finance tools;
+7. the CLI can run local reminder checks without an LLM API key;
 8. runtime settings and credentials persist separately without exposing secrets
-   to the model or session transcript.
+   to the model or session transcript; and
+9. profile revisions, categorization metadata, file concurrency, and declarative
+   export behavior preserve the accounting and runtime boundaries.
 
 ## 12. Deferred extensions
 

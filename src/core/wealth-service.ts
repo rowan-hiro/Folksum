@@ -28,6 +28,7 @@ import type {
 	RecordAssetValuationInput,
 	RecordExpenseInput,
 	RecordIncomeInput,
+	RecordTransactionBookkeepingInput,
 	RecordedCardStatement,
 	RecordedAssetValuation,
 	RegisterAssetInput,
@@ -37,6 +38,8 @@ import type {
 	SpendingCategorySummary,
 	SpendingSummary,
 	TrackedAsset,
+	TransactionBookkeepingMetadata,
+	TransactionCustomFieldValue,
 	TransactionSource,
 } from "./types.ts";
 
@@ -148,6 +151,18 @@ interface InternalTransactionInput {
 	idempotencyKey?: string | undefined;
 	reversalOf?: string | undefined;
 	postings: InternalPosting[];
+	bookkeeping?: RecordTransactionBookkeepingInput;
+}
+
+interface TransactionBookkeepingRow {
+	profile_revision: number;
+	profile_hash: string;
+	category_id: string | null;
+	category_label: string | null;
+	categorization_rule_id: string | null;
+	custom_fields_json: string;
+	resolution_source: TransactionBookkeepingMetadata["resolutionSource"];
+	created_at: string;
 }
 
 const ACCOUNT_TYPES = new Set<AccountType>(["asset", "liability", "income", "expense", "equity"]);
@@ -299,7 +314,10 @@ export class WealthService {
 		return rows.map(mapAccount);
 	}
 
-	recordExpense(input: RecordExpenseInput): PostedTransaction {
+	recordExpense(
+		input: RecordExpenseInput,
+		bookkeeping?: RecordTransactionBookkeepingInput,
+	): PostedTransaction {
 		const duplicate = this.resolveLedgerIdempotency(input.idempotencyKey);
 		if (duplicate) return duplicate;
 
@@ -326,10 +344,17 @@ export class WealthService {
 				{ accountId: expense.id, amountMinor },
 				{ accountId: funding.id, amountMinor: -amountMinor },
 			],
+			...(bookkeeping ? { bookkeeping } : {}),
 		});
 	}
 
-	recordIncome(input: RecordIncomeInput): PostedTransaction {
+	recordIncome(
+		input: RecordIncomeInput,
+		bookkeeping?: RecordTransactionBookkeepingInput,
+	): PostedTransaction {
+		const duplicate = this.resolveLedgerIdempotency(input.idempotencyKey);
+		if (duplicate) return duplicate;
+
 		const income = this.getAccount(input.incomeAccountId);
 		const destination = this.getAccount(input.destinationAccountId);
 		this.requireAccountType(income, ["income"], "Income source");
@@ -347,7 +372,12 @@ export class WealthService {
 				{ accountId: destination.id, amountMinor },
 				{ accountId: income.id, amountMinor: -amountMinor },
 			],
+			...(bookkeeping ? { bookkeeping } : {}),
 		});
+	}
+
+	findLedgerTransactionByIdempotencyKey(idempotencyKey: string | undefined): PostedTransaction | undefined {
+		return this.resolveLedgerIdempotency(idempotencyKey);
 	}
 
 	recordTransfer(input: RecordTransferInput): PostedTransaction {
@@ -414,6 +444,25 @@ export class WealthService {
 					amountMinor: -posting.amountMinor,
 					memo: `Reverses ${posting.id}`,
 				})),
+				...(original.bookkeeping
+					? {
+							bookkeeping: {
+								profileRevision: original.bookkeeping.profileRevision,
+								profileHash: original.bookkeeping.profileHash,
+								...(original.bookkeeping.categoryId
+									? {
+											categoryId: original.bookkeeping.categoryId,
+											categoryLabel: original.bookkeeping.categoryLabel,
+										}
+									: {}),
+								...(original.bookkeeping.categorizationRuleId
+									? { categorizationRuleId: original.bookkeeping.categorizationRuleId }
+									: {}),
+								customFields: original.bookkeeping.customFields,
+								resolutionSource: "reversal",
+							},
+						}
+					: {}),
 			});
 		});
 	}
@@ -440,6 +489,26 @@ export class WealthService {
 				 LIMIT ?`,
 			)
 			.all(this.household.id, limit) as unknown as TransactionRow[];
+		return rows.map((row) => this.mapTransaction(row));
+	}
+
+	listTransactionsInRange(from: string, to: string): LedgerTransaction[] {
+		const fromDate = normalizeDate(from);
+		const toDate = normalizeDate(to);
+		if (fromDate > toDate) {
+			throw new WealthError("invalid_date", "Transaction range start must not follow its end.");
+		}
+		const rows = this.database.connection
+			.prepare(
+				`SELECT * FROM transactions
+				 WHERE household_id = ? AND occurred_at >= ? AND occurred_at < ?
+				 ORDER BY occurred_at, created_at, id`,
+			)
+			.all(
+				this.household.id,
+				`${fromDate}T00:00:00.000Z`,
+				`${addDays(toDate, 1)}T00:00:00.000Z`,
+			) as unknown as TransactionRow[];
 		return rows.map((row) => this.mapTransaction(row));
 	}
 
@@ -986,6 +1055,7 @@ export class WealthService {
 		if (!Number.isSafeInteger(total) || total !== 0) {
 			throw new WealthError("invalid_transaction", "Transaction postings must balance to zero.");
 		}
+		const bookkeeping = input.bookkeeping ? normalizeTransactionBookkeeping(input.bookkeeping) : undefined;
 
 		const transactionId = randomUUID();
 		const createdAt = new Date().toISOString();
@@ -1013,6 +1083,26 @@ export class WealthService {
 		);
 		for (const posting of input.postings) {
 			insertPosting.run(randomUUID(), transactionId, posting.accountId, posting.amountMinor, posting.memo ?? null);
+		}
+		if (bookkeeping) {
+			this.database.connection
+				.prepare(
+					`INSERT INTO transaction_bookkeeping
+						(transaction_id, profile_revision, profile_hash, category_id, category_label,
+						 categorization_rule_id, custom_fields_json, resolution_source, created_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				)
+				.run(
+					transactionId,
+					bookkeeping.profileRevision,
+					bookkeeping.profileHash,
+					bookkeeping.categoryId ?? null,
+					bookkeeping.categoryLabel ?? null,
+					bookkeeping.categorizationRuleId ?? null,
+					JSON.stringify(bookkeeping.customFields),
+					bookkeeping.resolutionSource,
+					createdAt,
+				);
 		}
 
 		return { transaction: this.getTransaction(transactionId), duplicate: false };
@@ -1058,6 +1148,10 @@ export class WealthService {
 			amount: formatDecimalAmount(posting.amount_minor, row.currency),
 			...(posting.memo ? { memo: posting.memo } : {}),
 		}));
+		const bookkeepingRow = this.database.connection
+			.prepare("SELECT * FROM transaction_bookkeeping WHERE transaction_id = ?")
+			.get(row.id) as unknown as TransactionBookkeepingRow | undefined;
+		const bookkeeping = bookkeepingRow ? mapTransactionBookkeeping(bookkeepingRow) : undefined;
 		return {
 			id: row.id,
 			householdId: row.household_id,
@@ -1069,6 +1163,7 @@ export class WealthService {
 			postings,
 			...(row.idempotency_key ? { idempotencyKey: row.idempotency_key } : {}),
 			...(row.reversal_of ? { reversalOf: row.reversal_of } : {}),
+			...(bookkeeping ? { bookkeeping } : {}),
 		};
 	}
 
@@ -1232,6 +1327,83 @@ function mapAccount(row: AccountRow): Account {
 		...(row.subtype ? { subtype: row.subtype } : {}),
 		...(row.owner_name ? { ownerName: row.owner_name } : {}),
 	};
+}
+
+function normalizeTransactionBookkeeping(
+	input: RecordTransactionBookkeepingInput,
+): RecordTransactionBookkeepingInput {
+	if (!Number.isSafeInteger(input.profileRevision) || input.profileRevision < 0) {
+		throw new WealthError("invalid_transaction", "Bookkeeping profile revision must be a non-negative integer.");
+	}
+	const profileHash = input.profileHash.trim().toLowerCase();
+	if (!/^[a-f0-9]{64}$/.test(profileHash)) {
+		throw new WealthError("invalid_transaction", "Bookkeeping profile hash must be a SHA-256 hex digest.");
+	}
+	const categoryId = cleanOptionalText(input.categoryId);
+	const categoryLabel = cleanOptionalText(input.categoryLabel);
+	if (Boolean(categoryId) !== Boolean(categoryLabel)) {
+		throw new WealthError(
+			"invalid_transaction",
+			"Bookkeeping category id and label must either both be present or both be absent.",
+		);
+	}
+	if (
+		!["explicit", "rule", "account_binding", "unclassified", "reversal"].includes(
+			input.resolutionSource,
+		)
+	) {
+		throw new WealthError("invalid_transaction", "Unsupported bookkeeping resolution source.");
+	}
+	const customFields: Record<string, TransactionCustomFieldValue> = {};
+	for (const key of Object.keys(input.customFields).sort()) {
+		const value = input.customFields[key];
+		if (value === undefined) {
+			throw new WealthError("invalid_transaction", `Bookkeeping custom field "${key}" is undefined.`);
+		}
+		if (!key.trim() || key.length > 80) {
+			throw new WealthError("invalid_transaction", "Bookkeeping custom field ids must be 1 to 80 characters.");
+		}
+		if (typeof value === "number" && !Number.isSafeInteger(value)) {
+			throw new WealthError("invalid_transaction", `Bookkeeping custom field "${key}" must be a safe integer.`);
+		}
+		if (typeof value === "string" && value.length > 1_000) {
+			throw new WealthError(
+				"invalid_transaction",
+				`Bookkeeping custom field "${key}" must not exceed 1000 characters.`,
+			);
+		}
+		if (!["string", "boolean", "number"].includes(typeof value)) {
+			throw new WealthError("invalid_transaction", `Bookkeeping custom field "${key}" has an invalid value.`);
+		}
+		customFields[key] = value;
+	}
+	const categorizationRuleId = cleanOptionalText(input.categorizationRuleId);
+	return {
+		profileRevision: input.profileRevision,
+		profileHash,
+		...(categoryId && categoryLabel ? { categoryId, categoryLabel } : {}),
+		...(categorizationRuleId ? { categorizationRuleId } : {}),
+		customFields,
+		resolutionSource: input.resolutionSource,
+	};
+}
+
+function mapTransactionBookkeeping(row: TransactionBookkeepingRow): TransactionBookkeepingMetadata {
+	const parsed = JSON.parse(row.custom_fields_json) as unknown;
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+		throw new WealthError("invalid_transaction", "Stored bookkeeping custom fields are invalid.");
+	}
+	const normalized = normalizeTransactionBookkeeping({
+		profileRevision: row.profile_revision,
+		profileHash: row.profile_hash,
+		...(row.category_id && row.category_label
+			? { categoryId: row.category_id, categoryLabel: row.category_label }
+			: {}),
+		...(row.categorization_rule_id ? { categorizationRuleId: row.categorization_rule_id } : {}),
+		customFields: parsed as Record<string, TransactionCustomFieldValue>,
+		resolutionSource: row.resolution_source,
+	});
+	return { ...normalized, createdAt: row.created_at };
 }
 
 function cleanOptionalText(value: string | undefined): string | undefined {
