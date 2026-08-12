@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 
 export class WealthDatabase {
 	readonly connection: DatabaseSync;
@@ -450,6 +450,104 @@ export class WealthDatabase {
 				END;
 
 				PRAGMA user_version = 7;
+				COMMIT;
+			`);
+			version = 7;
+		}
+
+		if (version < 8) {
+			this.connection.exec(`
+				BEGIN;
+
+				CREATE TABLE bookkeeping_profile_revisions (
+					id TEXT PRIMARY KEY,
+					household_id TEXT NOT NULL REFERENCES households(id) ON DELETE RESTRICT,
+					revision INTEGER NOT NULL CHECK (revision > 0),
+					profile_json TEXT NOT NULL CHECK (json_valid(profile_json)),
+					profile_hash TEXT NOT NULL CHECK (length(profile_hash) = 64),
+					author_id TEXT REFERENCES household_members(id) ON DELETE RESTRICT,
+					source TEXT NOT NULL CHECK (source IN ('user', 'agent', 'import', 'system')),
+					created_at TEXT NOT NULL,
+					UNIQUE (household_id, revision),
+					UNIQUE (id, household_id)
+				) STRICT;
+
+				CREATE TABLE active_bookkeeping_profiles (
+					household_id TEXT PRIMARY KEY REFERENCES households(id) ON DELETE RESTRICT,
+					revision_id TEXT NOT NULL,
+					activated_at TEXT NOT NULL,
+					FOREIGN KEY (revision_id, household_id)
+						REFERENCES bookkeeping_profile_revisions(id, household_id) ON DELETE RESTRICT
+				) STRICT;
+
+				CREATE TABLE transaction_bookkeeping (
+					transaction_id TEXT PRIMARY KEY REFERENCES transactions(id) ON DELETE RESTRICT,
+					profile_revision INTEGER NOT NULL CHECK (profile_revision >= 0),
+					profile_hash TEXT NOT NULL CHECK (length(profile_hash) = 64),
+					category_id TEXT,
+					category_label TEXT,
+					categorization_rule_id TEXT,
+					custom_fields_json TEXT NOT NULL CHECK (json_valid(custom_fields_json)),
+					resolution_source TEXT NOT NULL CHECK (
+						resolution_source IN ('explicit', 'rule', 'account_binding', 'unclassified', 'reversal')
+					),
+					created_at TEXT NOT NULL,
+					CHECK ((category_id IS NULL) = (category_label IS NULL))
+				) STRICT;
+
+				CREATE INDEX bookkeeping_profile_revisions_household_idx
+					ON bookkeeping_profile_revisions(household_id, revision DESC);
+
+				CREATE TRIGGER bookkeeping_profile_revisions_match_author
+					BEFORE INSERT ON bookkeeping_profile_revisions
+					WHEN NEW.author_id IS NOT NULL AND NOT EXISTS (
+						SELECT 1 FROM household_members
+						WHERE id = NEW.author_id AND household_id = NEW.household_id
+					)
+					BEGIN
+						SELECT RAISE(ABORT, 'Bookkeeping profile author must belong to the household');
+					END;
+
+				CREATE TRIGGER bookkeeping_profile_revisions_immutable_update
+					BEFORE UPDATE ON bookkeeping_profile_revisions
+					BEGIN
+						SELECT RAISE(ABORT, 'Bookkeeping profile revisions are immutable');
+					END;
+
+				CREATE TRIGGER bookkeeping_profile_revisions_immutable_delete
+					BEFORE DELETE ON bookkeeping_profile_revisions
+					BEGIN
+						SELECT RAISE(ABORT, 'Bookkeeping profile revisions are immutable');
+					END;
+
+				CREATE TRIGGER transaction_bookkeeping_immutable_update
+					BEFORE UPDATE ON transaction_bookkeeping
+					BEGIN
+						SELECT RAISE(ABORT, 'Transaction bookkeeping metadata is immutable');
+					END;
+
+				CREATE TRIGGER transaction_bookkeeping_match_profile_revision
+					BEFORE INSERT ON transaction_bookkeeping
+					WHEN NEW.profile_revision > 0 AND NOT EXISTS (
+						SELECT 1
+						FROM transactions AS transactions
+						JOIN bookkeeping_profile_revisions AS revisions
+							ON revisions.household_id = transactions.household_id
+							AND revisions.revision = NEW.profile_revision
+							AND revisions.profile_hash = NEW.profile_hash
+						WHERE transactions.id = NEW.transaction_id
+					)
+					BEGIN
+						SELECT RAISE(ABORT, 'Transaction bookkeeping profile revision does not match its household');
+					END;
+
+				CREATE TRIGGER transaction_bookkeeping_immutable_delete
+					BEFORE DELETE ON transaction_bookkeeping
+					BEGIN
+						SELECT RAISE(ABORT, 'Transaction bookkeeping metadata is immutable');
+					END;
+
+				PRAGMA user_version = 8;
 				COMMIT;
 			`);
 		}

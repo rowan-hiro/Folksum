@@ -9,7 +9,9 @@ import type {
 	RecordTransferInput,
 	RegisterAssetInput,
 	ReverseTransactionInput,
+	TransactionCustomFieldValue,
 } from "../core/types.ts";
+import type { BookkeepingProfilePatch } from "./bookkeeping-profile.ts";
 
 export type FinanceIrSource = "agent" | "channel" | "scheduler";
 export type FinanceRisk = "none" | "low" | "medium" | "high";
@@ -31,9 +33,20 @@ interface MutationFinanceIrBase<TKind extends string, TPayload> extends FinanceI
 export type CreateAccountIr = MutationFinanceIrBase<"create_account", CreateAccountInput>;
 export type RecordExpenseIr = MutationFinanceIrBase<
 	"record_expense",
-	Omit<RecordExpenseInput, "idempotencyKey">
+	Omit<RecordExpenseInput, "idempotencyKey" | "expenseAccountId"> & {
+		expenseAccountId?: string;
+		categoryId?: string;
+		customFields?: Readonly<Record<string, TransactionCustomFieldValue>>;
+	}
 >;
-export type RecordIncomeIr = MutationFinanceIrBase<"record_income", Omit<RecordIncomeInput, "idempotencyKey">>;
+export type RecordIncomeIr = MutationFinanceIrBase<
+	"record_income",
+	Omit<RecordIncomeInput, "idempotencyKey" | "incomeAccountId"> & {
+		incomeAccountId?: string;
+		categoryId?: string;
+		customFields?: Readonly<Record<string, TransactionCustomFieldValue>>;
+	}
+>;
 export type RecordTransferIr = MutationFinanceIrBase<
 	"record_transfer",
 	Omit<RecordTransferInput, "idempotencyKey">
@@ -49,6 +62,10 @@ export type RecordCardPaymentIr = MutationFinanceIrBase<
 >;
 export type RegisterAssetIr = MutationFinanceIrBase<"register_asset", RegisterAssetInput>;
 export type RecordAssetValuationIr = MutationFinanceIrBase<"record_asset_valuation", RecordAssetValuationInput>;
+export type UpdateBookkeepingProfileIr = MutationFinanceIrBase<
+	"update_bookkeeping_profile",
+	{ expectedRevision: number; patch: BookkeepingProfilePatch }
+>;
 
 export type FinanceMutationIr =
 	| CreateAccountIr
@@ -59,20 +76,28 @@ export type FinanceMutationIr =
 	| RecordCardStatementIr
 	| RecordCardPaymentIr
 	| RegisterAssetIr
-	| RecordAssetValuationIr;
+	| RecordAssetValuationIr
+	| UpdateBookkeepingProfileIr;
 
 export type ListAccountsIr = FinanceIrBase<"list_accounts", Record<string, never>>;
 export type ListTransactionsIr = FinanceIrBase<"list_transactions", { limit?: number }>;
 export type ListCardRemindersIr = FinanceIrBase<"list_card_reminders", ListCardRemindersInput>;
 export type GetNetWorthIr = FinanceIrBase<"get_net_worth", { asOf?: string }>;
 export type GetSpendingSummaryIr = FinanceIrBase<"get_spending_summary", { from: string; to: string }>;
+export type GetBookkeepingProfileIr = FinanceIrBase<"get_bookkeeping_profile", Record<string, never>>;
+export type PreviewBookkeepingExportIr = FinanceIrBase<
+	"preview_bookkeeping_export",
+	{ exportProfileId: string; from: string; to: string; limit?: number }
+>;
 
 export type FinanceReadIr =
 	| ListAccountsIr
 	| ListTransactionsIr
 	| ListCardRemindersIr
 	| GetNetWorthIr
-	| GetSpendingSummaryIr;
+	| GetSpendingSummaryIr
+	| GetBookkeepingProfileIr
+	| PreviewBookkeepingExportIr;
 
 export type FinanceIr = FinanceMutationIr | FinanceReadIr;
 
@@ -82,6 +107,8 @@ const READ_KINDS = new Set<FinanceIr["kind"]>([
 	"list_card_reminders",
 	"get_net_worth",
 	"get_spending_summary",
+	"get_bookkeeping_profile",
+	"preview_bookkeeping_export",
 ]);
 
 export function isFinanceReadIr(ir: FinanceIr): ir is FinanceReadIr {
@@ -95,6 +122,8 @@ export function getFinanceRisk(ir: FinanceIr): FinanceRisk {
 		case "list_card_reminders":
 		case "get_net_worth":
 		case "get_spending_summary":
+		case "get_bookkeeping_profile":
+		case "preview_bookkeeping_export":
 			return "none";
 		case "record_expense":
 		case "record_income":
@@ -104,6 +133,7 @@ export function getFinanceRisk(ir: FinanceIr): FinanceRisk {
 		case "record_card_statement":
 		case "register_asset":
 		case "record_asset_valuation":
+		case "update_bookkeeping_profile":
 			return "medium";
 		case "reverse_transaction":
 		case "record_card_payment":

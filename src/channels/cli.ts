@@ -5,6 +5,15 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 
 import { loadApplicationConfig, type ApplicationConfig } from "../app/config.ts";
+import { BookkeepingProfileService } from "../app/bookkeeping-profile.ts";
+import { BookkeepingExportService } from "../app/bookkeeping-export.ts";
+import {
+	DEFAULT_BOOKKEEPING_PROFILE_PATH,
+	readBookkeepingProfileFile,
+	serializeBookkeepingProfileFile,
+	writeBookkeepingExportFile,
+	writeBookkeepingProfileFile,
+} from "../app/bookkeeping-files.ts";
 import { ConfirmationStore } from "../app/confirmation.ts";
 import { FinanceApplication } from "../app/finance-application.ts";
 import { MemoryRuleService } from "../app/memory.ts";
@@ -34,6 +43,8 @@ try {
 	const identities = new SessionIdentityService(database);
 	const scope = ensureCliIdentity(wealth, identities, config);
 	const memory = new MemoryRuleService(database);
+	const profiles = new BookkeepingProfileService(database);
+	const exporter = new BookkeepingExportService(wealth, profiles);
 	const outbox = new NotificationOutbox(database);
 	const scheduler = new ReminderScheduler(wealth, memory, outbox);
 	const command = process.argv[2] ?? "tui";
@@ -44,6 +55,10 @@ try {
 	} else if (command === "schedule") {
 		const result = scheduler.run({ asOf: today, recipients: [scope] });
 		console.log(JSON.stringify(result, null, 2));
+	} else if (command === "profile") {
+		runProfileCommand(profiles, scope, process.argv.slice(3));
+	} else if (command === "export") {
+		runExportCommand(exporter, scope.householdId, process.argv.slice(3));
 	} else if (command === "tui") {
 		const { models, settingsController } = createModelServices(config);
 		await runFolksumTui({
@@ -69,9 +84,10 @@ try {
 			config,
 			models,
 			settingsController,
+			profiles,
 		});
 	} else {
-		throw new Error(`Unknown command "${command}". Use tui, chat, reminders, or schedule.`);
+		throw new Error(`Unknown command "${command}". Use tui, chat, reminders, schedule, profile, or export.`);
 	}
 } finally {
 	database.close();
@@ -104,13 +120,19 @@ async function runChat(input: {
 	config: ApplicationConfig;
 	models: ReturnType<typeof createFolksumModels>;
 	settingsController: PiRuntimeSettingsController;
+	profiles: BookkeepingProfileService;
 }): Promise<void> {
 	const modelId = input.config.model;
 	if (!modelId) {
 		throw new Error("A model is required for chat. Set model in the JSON config or FOLKSUM_MODEL.");
 	}
 	const provider = input.config.provider;
-	const application = new FinanceApplication(input.wealth, new ConfirmationStore(input.database));
+	const application = new FinanceApplication(
+		input.wealth,
+		new ConfirmationStore(input.database),
+		undefined,
+		input.profiles,
+	);
 	const pending: PiConfirmationRequest[] = [];
 	const runtime = await createPiRuntime({
 		provider,
@@ -184,6 +206,84 @@ function printReminders(reminders: ReturnType<WealthService["listCardReminders"]
 			`- ${reminder.cardAccountName}: ${reminder.currency} ${reminder.outstandingAmount}, due ${reminder.dueDate} (${reminder.status})`,
 		);
 	}
+}
+
+function runProfileCommand(
+	profiles: BookkeepingProfileService,
+	scope: ReturnType<SessionIdentityService["resolve"]>,
+	args: string[],
+): void {
+	const force = args.includes("--force");
+	const positional = args.filter((argument) => argument !== "--force");
+	const action = positional[0] ?? "show";
+	if (action === "show") {
+		if (positional.length > 1 || force) {
+			throw new Error("Usage: folksum profile show");
+		}
+		stdout.write(serializeBookkeepingProfileFile(profiles.getActiveProfile(scope.householdId)));
+		return;
+	}
+	if (action === "export") {
+		if (positional.length > 2) {
+			throw new Error("Usage: folksum profile export [path] [--force]");
+		}
+		const path = positional[1] ?? DEFAULT_BOOKKEEPING_PROFILE_PATH;
+		const active = profiles.getActiveProfile(scope.householdId);
+		const writtenPath = writeBookkeepingProfileFile(path, active, { overwrite: force });
+		console.log(JSON.stringify({ status: "exported", path: writtenPath, revision: active.revision }));
+		return;
+	}
+	if (action === "apply") {
+		if (force || positional.length > 2) {
+			throw new Error("Usage: folksum profile apply [path]");
+		}
+		const path = positional[1] ?? DEFAULT_BOOKKEEPING_PROFILE_PATH;
+		const document = readBookkeepingProfileFile(path);
+		const result = profiles.activateProfile(scope, {
+			profile: document.profile,
+			expectedRevision: document.expectedRevision,
+			source: "import",
+		});
+		console.log(
+			JSON.stringify({
+				status: result.duplicate ? "unchanged" : "activated",
+				revision: result.active.revision,
+				profileHash: result.active.profileHash,
+			}),
+		);
+		return;
+	}
+	throw new Error("Usage: folksum profile show | export [path] [--force] | apply [path]");
+}
+
+function runExportCommand(
+	exporter: BookkeepingExportService,
+	householdId: string,
+	args: string[],
+): void {
+	const force = args.includes("--force");
+	const positional = args.filter((argument) => argument !== "--force");
+	if (positional.length < 3 || positional.length > 4 || (force && positional.length < 4)) {
+		throw new Error("Usage: folksum export <profile-id> <from> <to> [output-path] [--force]");
+	}
+	const [exportProfileId, from, to, outputPath] = positional;
+	if (!exportProfileId || !from || !to) {
+		throw new Error("Usage: folksum export <profile-id> <from> <to> [output-path] [--force]");
+	}
+	const artifact = exporter.render({ householdId, exportProfileId, from, to });
+	if (!outputPath) {
+		stdout.write(artifact.content);
+		return;
+	}
+	const writtenPath = writeBookkeepingExportFile(outputPath, artifact, { overwrite: force });
+	console.log(
+		JSON.stringify({
+			status: "exported",
+			path: writtenPath,
+			format: artifact.format,
+			rows: artifact.totalRows,
+		}),
+	);
 }
 
 function dateInTimezone(timezone: string): string {

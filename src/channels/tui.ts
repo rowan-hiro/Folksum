@@ -22,6 +22,7 @@ import {
 } from "@earendil-works/pi-tui";
 
 import type { ApplicationConfig, RuntimeThinkingLevel } from "../app/config.ts";
+import { BookkeepingProfileService } from "../app/bookkeeping-profile.ts";
 import { ConfirmationStore } from "../app/confirmation.ts";
 import { FinanceApplication } from "../app/finance-application.ts";
 import type { IdentityScope } from "../app/identity.ts";
@@ -171,7 +172,12 @@ class FolksumTui {
 		this.input = input;
 		this.tui = new TuiAltScreen(input.terminal ?? new ProcessTerminal());
 		this.editor = new Editor(this.tui, EDITOR_THEME, { paddingX: 1, autocompleteMaxVisible: 8 });
-		this.application = new FinanceApplication(input.wealth, new ConfirmationStore(input.database));
+		this.application = new FinanceApplication(
+			input.wealth,
+			new ConfirmationStore(input.database),
+			undefined,
+			new BookkeepingProfileService(input.database),
+		);
 		this.runtimeFactory = input.runtimeFactory ?? createPiRuntime;
 
 		const scroll = new ScrollView(this.transcript, {

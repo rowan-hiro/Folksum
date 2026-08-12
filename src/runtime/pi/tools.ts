@@ -38,7 +38,9 @@ interface CreateAccountParams {
 interface RecordExpenseParams {
 	description: string;
 	amount: string;
-	expenseAccountId: string;
+	expenseAccountId?: string;
+	categoryId?: string;
+	customFields?: Record<string, string | boolean | number>;
 	fundingAccountId: string;
 	occurredAt?: string;
 }
@@ -46,7 +48,9 @@ interface RecordExpenseParams {
 interface RecordIncomeParams {
 	description: string;
 	amount: string;
-	incomeAccountId: string;
+	incomeAccountId?: string;
+	categoryId?: string;
+	customFields?: Record<string, string | boolean | number>;
 	destinationAccountId: string;
 	occurredAt?: string;
 }
@@ -111,6 +115,18 @@ interface GetNetWorthParams {
 interface GetSpendingSummaryParams {
 	from: string;
 	to: string;
+}
+
+interface UpdateBookkeepingProfileParams {
+	expectedRevision: number;
+	patch: object;
+}
+
+interface PreviewBookkeepingExportParams {
+	exportProfileId: string;
+	from: string;
+	to: string;
+	limit?: number;
 }
 
 export function createFinanceTools(options: CreateFinanceToolsOptions): AgentTool[] {
@@ -189,8 +205,146 @@ export function createFinanceTools(options: CreateFinanceToolsOptions): AgentToo
 		Type.Literal("business"),
 		Type.Literal("other"),
 	]);
+	const categoryDefinition = Type.Object({
+		id: Type.String(),
+		label: Type.String(),
+		kind: Type.Union([Type.Literal("expense"), Type.Literal("income")]),
+		parentId: Type.Optional(Type.String()),
+		accountIds: Type.Optional(Type.Record(Type.String(), Type.String())),
+	});
+	const customFieldDefinition = Type.Object({
+		id: Type.String(),
+		label: Type.String(),
+		target: Type.Literal("transaction"),
+		type: Type.Union([
+			Type.Literal("text"),
+			Type.Literal("boolean"),
+			Type.Literal("integer"),
+			Type.Literal("date"),
+		]),
+		required: Type.Boolean(),
+		allowedValues: Type.Optional(Type.Array(Type.String())),
+	});
+	const categorizationRuleDefinition = Type.Object({
+		id: Type.String(),
+		priority: Type.Integer({ minimum: 0, maximum: 100_000 }),
+		match: Type.Object({
+			transactionKind: Type.Union([Type.Literal("expense"), Type.Literal("income")]),
+			descriptionContains: Type.String(),
+		}),
+		assign: Type.Object({
+			categoryId: Type.Optional(Type.String()),
+			fields: Type.Optional(
+				Type.Record(
+					Type.String(),
+					Type.Union([Type.String(), Type.Boolean(), Type.Integer()]),
+				),
+			),
+		}),
+	});
+	const exportProfileDefinition = Type.Object({
+		id: Type.String(),
+		label: Type.String(),
+		format: Type.Union([Type.Literal("csv"), Type.Literal("json")]),
+		rowMode: Type.Union([Type.Literal("transactions"), Type.Literal("postings")]),
+		reversals: Type.Union([Type.Literal("include"), Type.Literal("exclude"), Type.Literal("only")]),
+		amountSign: Type.Union([
+			Type.Literal("debit-positive"),
+			Type.Literal("credit-positive"),
+			Type.Literal("absolute"),
+		]),
+		delimiter: Type.Optional(Type.Union([Type.Literal(","), Type.Literal(";"), Type.Literal("\t")])),
+		filters: Type.Optional(
+			Type.Object({
+				categoryIds: Type.Optional(Type.Array(Type.String())),
+				accountIds: Type.Optional(Type.Array(Type.String())),
+				transactionSources: Type.Optional(
+					Type.Array(
+						Type.Union([
+							Type.Literal("agent"),
+							Type.Literal("manual"),
+							Type.Literal("import"),
+							Type.Literal("system"),
+						]),
+					),
+				),
+			}),
+		),
+		columns: Type.Array(
+			Type.Object({
+				header: Type.String(),
+				source: Type.String(),
+			}),
+		),
+	});
 
 	return [
+		{
+			name: "get_bookkeeping_profile",
+			label: "Get bookkeeping profile",
+			description:
+				"Read the active versioned household profile, including categories, custom fields, categorization rules, account bindings, and its revision.",
+			parameters: Type.Object({}),
+			async execute() {
+				return submit(read("get_bookkeeping_profile", {}));
+			},
+		},
+		{
+			name: "update_bookkeeping_profile",
+			label: "Update bookkeeping profile",
+			description:
+				"Propose validated upserts or removals against the active profile revision. This requires user confirmation and cannot change ledger invariants.",
+			parameters: Type.Object({
+				expectedRevision: Type.Integer({ minimum: 0 }),
+				patch: Type.Object({
+					categories: Type.Optional(
+						Type.Object({
+							upsert: Type.Optional(Type.Array(categoryDefinition)),
+							remove: Type.Optional(Type.Array(Type.String())),
+						}),
+					),
+					customFields: Type.Optional(
+						Type.Object({
+							upsert: Type.Optional(Type.Array(customFieldDefinition)),
+							remove: Type.Optional(Type.Array(Type.String())),
+						}),
+					),
+					categorizationRules: Type.Optional(
+						Type.Object({
+							upsert: Type.Optional(Type.Array(categorizationRuleDefinition)),
+							remove: Type.Optional(Type.Array(Type.String())),
+						}),
+					),
+					exportProfiles: Type.Optional(
+						Type.Object({
+							upsert: Type.Optional(Type.Array(exportProfileDefinition)),
+							remove: Type.Optional(Type.Array(Type.String())),
+						}),
+					),
+				}),
+			}),
+			async execute(toolCallId, rawParams) {
+				const params = rawParams as UpdateBookkeepingProfileParams;
+				return submit(mutation("update_bookkeeping_profile", params, toolCallId));
+			},
+			executionMode: "sequential",
+		},
+		{
+			name: "preview_bookkeeping_export",
+			label: "Preview bookkeeping export",
+			description:
+				"Render a read-only preview with an active declarative export profile. This never writes a file or executes user code.",
+			parameters: Type.Object({
+				exportProfileId: Type.String(),
+				from: Type.String({ description: "Inclusive YYYY-MM-DD start" }),
+				to: Type.String({ description: "Inclusive YYYY-MM-DD end" }),
+				limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
+			}),
+			async execute(_toolCallId, rawParams) {
+				const params = rawParams as PreviewBookkeepingExportParams;
+				return submit(read("preview_bookkeeping_export", params));
+			},
+		},
 		{
 			name: "list_accounts",
 			label: "List accounts",
@@ -241,7 +395,13 @@ export function createFinanceTools(options: CreateFinanceToolsOptions): AgentToo
 			parameters: Type.Object({
 				description: Type.String(),
 				amount: Type.String({ description: "Plain decimal amount" }),
-				expenseAccountId: Type.String(),
+				expenseAccountId: Type.Optional(
+					Type.String({ description: "Explicit expense account id; optional when a bound category or rule resolves it" }),
+				),
+				categoryId: Type.Optional(Type.String({ description: "Stable bookkeeping category id" })),
+				customFields: Type.Optional(
+					Type.Record(Type.String(), Type.Union([Type.String(), Type.Boolean(), Type.Integer()])),
+				),
 				fundingAccountId: Type.String(),
 				occurredAt: Type.Optional(Type.String({ description: "YYYY-MM-DD or ISO timestamp" })),
 			}),
@@ -264,7 +424,13 @@ export function createFinanceTools(options: CreateFinanceToolsOptions): AgentToo
 			parameters: Type.Object({
 				description: Type.String(),
 				amount: Type.String(),
-				incomeAccountId: Type.String(),
+				incomeAccountId: Type.Optional(
+					Type.String({ description: "Explicit income account id; optional when a bound category or rule resolves it" }),
+				),
+				categoryId: Type.Optional(Type.String({ description: "Stable bookkeeping category id" })),
+				customFields: Type.Optional(
+					Type.Record(Type.String(), Type.Union([Type.String(), Type.Boolean(), Type.Integer()])),
+				),
 				destinationAccountId: Type.String(),
 				occurredAt: Type.Optional(Type.String()),
 			}),

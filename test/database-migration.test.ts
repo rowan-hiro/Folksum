@@ -75,6 +75,15 @@ test("migrates v6 statements and allocations to lightweight tracking without rew
 
 	const downgrade = new DatabaseSync(path);
 	downgrade.exec(`
+		DROP TRIGGER transaction_bookkeeping_immutable_update;
+		DROP TRIGGER transaction_bookkeeping_immutable_delete;
+		DROP TRIGGER transaction_bookkeeping_match_profile_revision;
+		DROP TRIGGER bookkeeping_profile_revisions_immutable_update;
+		DROP TRIGGER bookkeeping_profile_revisions_immutable_delete;
+		DROP TRIGGER bookkeeping_profile_revisions_match_author;
+		DROP TABLE transaction_bookkeeping;
+		DROP TABLE active_bookkeeping_profiles;
+		DROP TABLE bookkeeping_profile_revisions;
 		DROP TRIGGER standalone_statement_payments_match_statement;
 		DROP TRIGGER statement_payments_match_integrated_statement;
 		DROP TRIGGER transactions_reject_standalone_idempotency;
@@ -92,7 +101,23 @@ test("migrates v6 statements and allocations to lightweight tracking without rew
 	context.after(() => migrated.close());
 	assert.equal(
 		(migrated.connection.prepare("PRAGMA user_version").get() as { user_version: number }).user_version,
-		7,
+		8,
+	);
+	assert.deepEqual(
+		migrated.connection
+			.prepare(
+				`SELECT name FROM sqlite_schema
+				 WHERE type = 'table' AND name IN (
+					'bookkeeping_profile_revisions', 'active_bookkeeping_profiles', 'transaction_bookkeeping'
+				 ) ORDER BY name`,
+			)
+			.all()
+			.map((row) => ({ ...row })),
+		[
+			{ name: "active_bookkeeping_profiles" },
+			{ name: "bookkeeping_profile_revisions" },
+			{ name: "transaction_bookkeeping" },
+		],
 	);
 	assert.ok(
 		(migrated.connection.prepare("PRAGMA table_info(credit_card_statements)").all() as Array<{ name: string }>).some(
