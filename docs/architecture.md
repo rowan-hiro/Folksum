@@ -289,7 +289,9 @@ outside the LLM conversation.
 ## 9. Storage and privacy
 
 SQLite runs in WAL mode with foreign keys enabled. Schema migrations are
-monotonic and execute in transactions. The database contains no LLM API keys.
+monotonic and execute in transactions. Non-secret runtime settings may be stored
+in the local JSON configuration file, with environment variables taking
+precedence. The database and JSON configuration contain no LLM API keys.
 Provider credentials come from environment variables or a future OS keychain
 adapter.
 

@@ -79,28 +79,37 @@ Start interactive chat with:
 HWM_MODEL=<installed-pi-model-id> npm start
 ```
 
-`HWM_PROVIDER` selects `openai`, `anthropic`, or `google` and defaults to
-`openai`. Chat also requires the selected provider's credentials to be available
-to the Pi runtime. The local-only commands do not require an LLM credential:
+Common settings are loaded from `.data/config.json` when it exists. Set
+`HWM_CONFIG_PATH` to use another JSON file; a relative path is resolved from the
+process working directory. Copy `config.example.json` to `.data/config.json` as
+a starting point. Every `HWM_*` setting below overrides the corresponding JSON
+value, so provider credentials can remain environment-only. Chat also requires
+the selected provider's credentials to be available to the Pi runtime. The
+local-only commands do not require an LLM credential:
 
 ```sh
 npm run reminders
 npm run schedule
 ```
 
-Runtime configuration:
+Runtime configuration, in descending precedence:
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `HWM_DB_PATH` | `.data/wealth.db` | SQLite database path |
-| `HWM_HOUSEHOLD_NAME` | `My Household` | Name used when initializing the household |
-| `HWM_BASE_CURRENCY` | `HKD` | Initial household base currency |
-| `HWM_CLI_IDENTITY` | `local-owner` | External identity for the CLI channel |
-| `HWM_SESSION` | `default` | CLI conversation key |
-| `HWM_MEMBER_NAME` | `Local Owner` | Name used when creating the initial member |
-| `HWM_TIMEZONE` | `Asia/Hong_Kong` | Timezone used for the initial member and reminders |
-| `HWM_PROVIDER` | `openai` | Pi model provider |
-| `HWM_MODEL` | none | Required Pi model ID for interactive chat |
+1. An environment variable.
+2. The corresponding key in the JSON configuration file.
+3. The built-in default.
+
+| Environment variable | JSON key | Default | Purpose |
+| --- | --- | --- | --- |
+| `HWM_CONFIG_PATH` | none | `.data/config.json` | JSON configuration file path |
+| `HWM_DB_PATH` | `databasePath` | `.data/wealth.db` | SQLite database path |
+| `HWM_HOUSEHOLD_NAME` | `householdName` | `My Household` | Name used when initializing the household |
+| `HWM_BASE_CURRENCY` | `baseCurrency` | `HKD` | Initial household base currency |
+| `HWM_CLI_IDENTITY` | `cliIdentity` | `local-owner` | External identity for the CLI channel |
+| `HWM_SESSION` | `session` | `default` | CLI conversation key |
+| `HWM_MEMBER_NAME` | `memberName` | `Local Owner` | Name used when creating the initial member |
+| `HWM_TIMEZONE` | `timezone` | `Asia/Hong_Kong` | Timezone used for the initial member and reminders |
+| `HWM_PROVIDER` | `provider` | `openai` | Pi model provider: `openai`, `anthropic`, or `google` |
+| `HWM_MODEL` | `model` | none | Required Pi model ID for interactive chat |
 
 <!-- driftseal -->
 <!-- driftseal-version: 5 -->

@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 
+import { loadApplicationConfig, type ApplicationConfig } from "../app/config.ts";
 import { ConfirmationStore } from "../app/confirmation.ts";
 import { FinanceApplication } from "../app/finance-application.ts";
 import { MemoryRuleService } from "../app/memory.ts";
@@ -9,19 +10,20 @@ import { NotificationOutbox, ReminderScheduler } from "../app/scheduler.ts";
 import { IdentityError, SessionIdentityService } from "../app/session.ts";
 import { WealthDatabase } from "../core/database.ts";
 import { WealthService } from "../core/wealth-service.ts";
-import { createPiRuntime, type PiProviderId } from "../runtime/pi/runtime.ts";
+import { createPiRuntime } from "../runtime/pi/runtime.ts";
 import type { PiConfirmationRequest } from "../runtime/pi/tools.ts";
 
-const databasePath = resolve(process.env.HWM_DB_PATH ?? ".data/wealth.db");
+const config = loadApplicationConfig();
+const databasePath = resolve(config.databasePath);
 const database = new WealthDatabase(databasePath);
 
 try {
 	const wealth = new WealthService(database, {
-		householdName: process.env.HWM_HOUSEHOLD_NAME ?? "My Household",
-		baseCurrency: process.env.HWM_BASE_CURRENCY ?? "HKD",
+		householdName: config.householdName,
+		baseCurrency: config.baseCurrency,
 	});
 	const identities = new SessionIdentityService(database);
-	const scope = ensureCliIdentity(wealth, identities);
+	const scope = ensureCliIdentity(wealth, identities, config);
 	const memory = new MemoryRuleService(database);
 	const outbox = new NotificationOutbox(database);
 	const scheduler = new ReminderScheduler(wealth, memory, outbox);
@@ -35,7 +37,7 @@ try {
 		console.log(JSON.stringify(result, null, 2));
 	} else if (command === "chat") {
 		printReminders(wealth.listCardReminders({ asOf: today }));
-		await runChat({ wealth, identities, scope, database, today });
+		await runChat({ wealth, identities, scope, database, today, config });
 	} else {
 		throw new Error(`Unknown command "${command}". Use chat, reminders, or schedule.`);
 	}
@@ -43,18 +45,18 @@ try {
 	database.close();
 }
 
-function ensureCliIdentity(wealth: WealthService, identities: SessionIdentityService) {
-	const externalId = process.env.HWM_CLI_IDENTITY ?? "local-owner";
-	const conversationKey = process.env.HWM_SESSION ?? "default";
+function ensureCliIdentity(wealth: WealthService, identities: SessionIdentityService, config: ApplicationConfig) {
+	const externalId = config.cliIdentity;
+	const conversationKey = config.session;
 	try {
 		return identities.resolve({ channel: "cli", externalId, conversationKey });
 	} catch (error) {
 		if (!(error instanceof IdentityError) || !error.message.includes("is not registered")) throw error;
 		const owner = identities.createMember({
 			householdId: wealth.household.id,
-			displayName: process.env.HWM_MEMBER_NAME ?? "Local Owner",
+			displayName: config.memberName,
 			role: "owner",
-			timezone: process.env.HWM_TIMEZONE ?? "Asia/Hong_Kong",
+			timezone: config.timezone,
 		});
 		identities.bindChannelIdentity({ memberId: owner.id, channel: "cli", externalId });
 		return identities.resolve({ channel: "cli", externalId, conversationKey });
@@ -67,10 +69,13 @@ async function runChat(input: {
 	scope: ReturnType<SessionIdentityService["resolve"]>;
 	database: WealthDatabase;
 	today: string;
+	config: ApplicationConfig;
 }): Promise<void> {
-	const modelId = process.env.HWM_MODEL;
-	if (!modelId) throw new Error("HWM_MODEL is required for chat, for example an installed Pi model id.");
-	const provider = parseProvider(process.env.HWM_PROVIDER ?? "openai");
+	const modelId = input.config.model;
+	if (!modelId) {
+		throw new Error("A model is required for chat. Set model in the JSON config or HWM_MODEL.");
+	}
+	const provider = input.config.provider;
 	const application = new FinanceApplication(input.wealth, new ConfirmationStore(input.database));
 	const pending: PiConfirmationRequest[] = [];
 	const runtime = await createPiRuntime({
@@ -122,11 +127,6 @@ function printReminders(reminders: ReturnType<WealthService["listCardReminders"]
 			`- ${reminder.cardAccountName}: ${reminder.currency} ${reminder.outstandingAmount}, due ${reminder.dueDate} (${reminder.status})`,
 		);
 	}
-}
-
-function parseProvider(value: string): PiProviderId {
-	if (value === "openai" || value === "anthropic" || value === "google") return value;
-	throw new Error(`Unsupported HWM_PROVIDER "${value}". Use openai, anthropic, or google.`);
 }
 
 function dateInTimezone(timezone: string): string {

@@ -1,0 +1,10 @@
+{
+	"databasePath": ".data/wealth.db",
+	"householdName": "My Household",
+	"baseCurrency": "HKD",
+	"cliIdentity": "local-owner",
+	"session": "default",
+	"memberName": "Local Owner",
+	"timezone": "Asia/Hong_Kong",
+	"provider": "openai"
+}
