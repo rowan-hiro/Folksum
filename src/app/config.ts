@@ -1,5 +1,13 @@
-import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { randomUUID } from "node:crypto";
+import { dirname, resolve } from "node:path";
 
 const DEFAULT_CONFIG_PATH = ".data/config.json";
 const FILE_KEYS = new Set([
@@ -12,9 +20,26 @@ const FILE_KEYS = new Set([
 	"timezone",
 	"provider",
 	"model",
+	"thinkingLevel",
 ]);
 
-export type ModelProviderId = "openai" | "anthropic" | "google";
+const RUNTIME_SETTING_ENVIRONMENT_VARIABLES = {
+	provider: "HWM_PROVIDER",
+	model: "HWM_MODEL",
+	thinkingLevel: "HWM_THINKING_LEVEL",
+} as const;
+
+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+export type ModelProviderId = "openai" | "openai-codex" | "anthropic" | "google";
+export type RuntimeThinkingLevel = (typeof THINKING_LEVELS)[number];
+export type WritableRuntimeSettingKey = keyof typeof RUNTIME_SETTING_ENVIRONMENT_VARIABLES;
+
+export interface RuntimeSettingsPatch {
+	provider?: ModelProviderId;
+	model?: string | null;
+	thinkingLevel?: RuntimeThinkingLevel;
+}
 
 export interface ApplicationConfig {
 	configPath: string;
@@ -27,10 +52,15 @@ export interface ApplicationConfig {
 	timezone: string;
 	provider: ModelProviderId;
 	model?: string;
+	thinkingLevel: RuntimeThinkingLevel;
 }
 
 export interface LoadApplicationConfigOptions {
 	cwd?: string;
+	env?: Readonly<Record<string, string | undefined>>;
+}
+
+export interface PatchApplicationConfigOptions {
 	env?: Readonly<Record<string, string | undefined>>;
 }
 
@@ -58,13 +88,19 @@ export function loadApplicationConfig(options: LoadApplicationConfigOptions = {}
 	const provider = requiredString(file, "provider", env.HWM_PROVIDER, "openai");
 	if (!isModelProvider(provider)) {
 		throw new ApplicationConfigError(
-			`Unsupported provider "${provider}". Use openai, anthropic, or google.`,
+			`Unsupported provider "${provider}". Use openai, openai-codex, anthropic, or google.`,
 		);
 	}
 
 	const timezone = requiredString(file, "timezone", env.HWM_TIMEZONE, "Asia/Hong_Kong");
 	assertTimezone(timezone);
 	const model = optionalString(file, "model", env.HWM_MODEL);
+	const thinkingLevel = requiredString(file, "thinkingLevel", env.HWM_THINKING_LEVEL, "low");
+	if (!isRuntimeThinkingLevel(thinkingLevel)) {
+		throw new ApplicationConfigError(
+			`Unsupported thinking level "${thinkingLevel}". Use ${THINKING_LEVELS.join(", ")}.`,
+		);
+	}
 
 	return {
 		configPath,
@@ -77,7 +113,46 @@ export function loadApplicationConfig(options: LoadApplicationConfigOptions = {}
 		timezone,
 		provider,
 		...(model ? { model } : {}),
+		thinkingLevel,
 	};
+}
+
+export function patchApplicationConfig(
+	configPath: string,
+	patch: RuntimeSettingsPatch,
+	options: PatchApplicationConfigOptions = {},
+): void {
+	const env = options.env ?? process.env;
+	const patchRecord = patch as Record<string, unknown>;
+	const keys = Object.keys(patchRecord);
+	if (keys.length === 0) {
+		throw new ApplicationConfigError("At least one runtime setting must be provided.");
+	}
+
+	for (const key of keys) {
+		if (!(key in RUNTIME_SETTING_ENVIRONMENT_VARIABLES)) {
+			throw new ApplicationConfigError(`Configuration value "${key}" cannot be changed at runtime.`);
+		}
+		const environmentName =
+			RUNTIME_SETTING_ENVIRONMENT_VARIABLES[key as WritableRuntimeSettingKey];
+		if (env[environmentName] !== undefined) {
+			throw new ApplicationConfigError(
+				`Configuration value "${key}" is overridden by ${environmentName} and cannot be changed in the JSON file.`,
+			);
+		}
+	}
+
+	validateRuntimeSettingsPatch(patchRecord);
+	const file = readConfigFile(configPath, false);
+	for (const key of keys as WritableRuntimeSettingKey[]) {
+		const value = patchRecord[key];
+		if (key === "model" && value === null) {
+			delete file.model;
+		} else {
+			file[key] = key === "model" && typeof value === "string" ? value.trim() : value;
+		}
+	}
+	writeJsonAtomically(configPath, file);
 }
 
 function readConfigFile(path: string, required: boolean): Record<string, unknown> {
@@ -126,7 +201,55 @@ function optionalString(
 }
 
 function isModelProvider(value: string): value is ModelProviderId {
-	return value === "openai" || value === "anthropic" || value === "google";
+	return (
+		value === "openai" ||
+		value === "openai-codex" ||
+		value === "anthropic" ||
+		value === "google"
+	);
+}
+
+export function isRuntimeThinkingLevel(value: string): value is RuntimeThinkingLevel {
+	return THINKING_LEVELS.some((level) => level === value);
+}
+
+function validateRuntimeSettingsPatch(patch: Record<string, unknown>): void {
+	if ("provider" in patch && (typeof patch.provider !== "string" || !isModelProvider(patch.provider))) {
+		throw new ApplicationConfigError(
+			`Unsupported provider "${String(patch.provider)}". Use openai, openai-codex, anthropic, or google.`,
+		);
+	}
+	if (
+		"model" in patch &&
+		patch.model !== null &&
+		(typeof patch.model !== "string" || !patch.model.trim())
+	) {
+		throw new ApplicationConfigError('Configuration value "model" must be a non-empty string or null.');
+	}
+	if (
+		"thinkingLevel" in patch &&
+		(typeof patch.thinkingLevel !== "string" || !isRuntimeThinkingLevel(patch.thinkingLevel))
+	) {
+		throw new ApplicationConfigError(
+			`Unsupported thinking level "${String(patch.thinkingLevel)}". Use ${THINKING_LEVELS.join(", ")}.`,
+		);
+	}
+}
+
+function writeJsonAtomically(path: string, value: Record<string, unknown>): void {
+	mkdirSync(dirname(path), { recursive: true });
+	const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+	try {
+		writeFileSync(temporaryPath, `${JSON.stringify(value, null, "\t")}\n`, {
+			encoding: "utf8",
+			flag: "wx",
+			mode: 0o600,
+		});
+		renameSync(temporaryPath, path);
+	} catch (error) {
+		rmSync(temporaryPath, { force: true });
+		throw error;
+	}
 }
 
 function assertTimezone(timezone: string): void {

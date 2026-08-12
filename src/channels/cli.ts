@@ -10,8 +10,12 @@ import { NotificationOutbox, ReminderScheduler } from "../app/scheduler.ts";
 import { IdentityError, SessionIdentityService } from "../app/session.ts";
 import { WealthDatabase } from "../core/database.ts";
 import { WealthService } from "../core/wealth-service.ts";
+import { FileCredentialStore } from "../runtime/pi/credential-store.ts";
+import { createHomeWealthModels } from "../runtime/pi/models.ts";
 import { createPiRuntime } from "../runtime/pi/runtime.ts";
+import { PiRuntimeSettingsController } from "../runtime/pi/settings.ts";
 import type { PiConfirmationRequest } from "../runtime/pi/tools.ts";
+import { containsLikelyCredential, runHomeWealthTui } from "./tui.ts";
 
 const config = loadApplicationConfig();
 const databasePath = resolve(config.databasePath);
@@ -35,11 +39,33 @@ try {
 	} else if (command === "schedule") {
 		const result = scheduler.run({ asOf: today, recipients: [scope] });
 		console.log(JSON.stringify(result, null, 2));
+	} else if (command === "tui") {
+		const { models, settingsController } = createModelServices(config);
+		await runHomeWealthTui({
+			wealth,
+			identities,
+			scope,
+			database,
+			currentDate: today,
+			config,
+			models,
+			settingsController,
+		});
 	} else if (command === "chat") {
 		printReminders(wealth.listCardReminders({ asOf: today }));
-		await runChat({ wealth, identities, scope, database, today, config });
+		const { models, settingsController } = createModelServices(config);
+		await runChat({
+			wealth,
+			identities,
+			scope,
+			database,
+			today,
+			config,
+			models,
+			settingsController,
+		});
 	} else {
-		throw new Error(`Unknown command "${command}". Use chat, reminders, or schedule.`);
+		throw new Error(`Unknown command "${command}". Use tui, chat, reminders, or schedule.`);
 	}
 } finally {
 	database.close();
@@ -70,6 +96,8 @@ async function runChat(input: {
 	database: WealthDatabase;
 	today: string;
 	config: ApplicationConfig;
+	models: ReturnType<typeof createHomeWealthModels>;
+	settingsController: PiRuntimeSettingsController;
 }): Promise<void> {
 	const modelId = input.config.model;
 	if (!modelId) {
@@ -85,6 +113,9 @@ async function runChat(input: {
 		identityService: input.identities,
 		scope: input.scope,
 		currentDate: input.today,
+		thinkingLevel: input.config.thinkingLevel,
+		models: input.models,
+		settingsController: input.settingsController,
 		onConfirmationRequired: (request) => pending.push(request),
 	});
 	const readline = createInterface({ input: stdin, output: stdout });
@@ -95,8 +126,17 @@ async function runChat(input: {
 			const text = (await readline.question("> ")).trim();
 			if (!text) continue;
 			if (text === "/exit" || text === "/quit") break;
-			await runtime.prompt(text, (delta) => stdout.write(delta));
-			stdout.write("\n");
+			if (containsLikelyCredential(text)) {
+				console.log("This input looks like a provider credential and was not sent or stored. Use the TUI login flow instead.");
+				continue;
+			}
+			try {
+				await runtime.prompt(text, (delta) => stdout.write(delta));
+				stdout.write("\n");
+			} catch {
+				stdout.write("\nModel provider request failed. Check authentication and model settings, then retry.\n");
+				continue;
+			}
 
 			while (pending.length > 0) {
 				const request = pending.shift();
@@ -114,6 +154,16 @@ async function runChat(input: {
 	} finally {
 		readline.close();
 	}
+}
+
+function createModelServices(config: ApplicationConfig): {
+	models: ReturnType<typeof createHomeWealthModels>;
+	settingsController: PiRuntimeSettingsController;
+} {
+	const credentials = new FileCredentialStore();
+	const models = createHomeWealthModels({ credentials });
+	const settingsController = new PiRuntimeSettingsController({ models, config });
+	return { models, settingsController };
 }
 
 function printReminders(reminders: ReturnType<WealthService["listCardReminders"]>): void {

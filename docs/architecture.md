@@ -41,7 +41,7 @@ connectors, consent, and security reviews.
 ## 3. System shape
 
 ```text
-Telegram / Web / CLI
+Telegram / Web / TUI / CLI
         |
         v
 Finance Agent App
@@ -78,7 +78,7 @@ database access.
 
 | Component | Responsibility |
 | --- | --- |
-| Channel adapters | Normalize Telegram, Web, and CLI events into one application request and render streamed responses or confirmation prompts |
+| Channel adapters | Normalize Telegram, Web, TUI, and CLI events into one application request and render streamed responses or confirmation prompts |
 | Session / Identity | Resolve channel identity to household, member, role, timezone, and conversation session |
 | Finance System Prompt | Describe finance behavior and tool protocol without embedding account balances or business rules |
 | Finance IR | Represent a validated, versioned financial read or mutation independently of the model and channel |
@@ -86,6 +86,8 @@ database access.
 | Memory / Rules | Store typed account aliases, categorization rules, preferences, and reminder policy separately from chat history |
 | Scheduler | Run deterministic reminder jobs and write channel-neutral notifications to an outbox |
 | Runtime adapter | Translate application capabilities into Pi tools and Pi events into application stream events |
+| Runtime settings | Validate and persist the selected provider, model, and thinking level without exposing credentials to the model |
+| Credential store | Implement the `pi-ai` credential contract in a private user-scoped `auth.json`, independently of finance data and transcripts |
 | Finance services | Enforce ledger, card-statement, valuation, reporting, and idempotency invariants |
 
 Channel adapters never instantiate Pi directly. They call one application service
@@ -266,6 +268,7 @@ prices, and automatic price feeds are later extensions.
 | `record_asset_valuation` | yes | Store a dated total valuation |
 | `get_net_worth` | no | Calculate household net worth per currency |
 | `get_spending_summary` | no | Aggregate expense postings over a date range |
+| `update_runtime_settings` | yes, non-financial | Persist and apply only provider, model, and thinking level |
 
 Tools return machine-readable details and concise text for the model. Errors are
 explicit; the model must not claim a write succeeded after a tool error.
@@ -289,11 +292,26 @@ outside the LLM conversation.
 ## 9. Storage and privacy
 
 SQLite runs in WAL mode with foreign keys enabled. Schema migrations are
-monotonic and execute in transactions. Non-secret runtime settings may be stored
-in the local JSON configuration file, with environment variables taking
-precedence. The database and JSON configuration contain no LLM API keys.
-Provider credentials come from environment variables or a future OS keychain
-adapter.
+monotonic and execute in transactions. Non-secret runtime settings are stored in
+the local JSON configuration file, with environment variables taking precedence.
+The TUI and an allow-listed model tool can update provider, model, and thinking
+level; changes are validated against the installed Pi catalog before an atomic
+JSON replacement.
+
+The database and non-secret JSON configuration contain no LLM credentials.
+Provider API keys and OAuth tokens use the `pi-ai` credential schema in
+`~/.home-wealth-manager/auth.json` by default. The directory and file are private
+on POSIX systems (`0700` and `0600`), writes are atomic and serialized, and
+`HWM_AUTH_PATH` may select a different location. Provider environment credentials
+remain available as a non-persistent fallback. Secret values collected by the
+login flow never enter SQLite sessions, model messages, tool arguments, or tool
+results. Login and logout are local TUI actions; the model can neither read nor
+mutate credentials.
+
+The runtime projects Pi messages onto an explicit persistence allowlist, omitting
+provider diagnostics, deferred handles, response identifiers, and tool details.
+The TUI strips terminal control sequences from all untrusted transcript text
+before rendering it, including streamed output and restored history.
 
 Application logs exclude raw prompts, account notes, and tool payloads by default.
 Backups must copy the SQLite database using the SQLite backup API or a documented
@@ -307,9 +325,10 @@ deployment hardening.
 - Validation failures do not partially mutate data.
 - The reminder runner is safe to invoke repeatedly.
 - Missing or stale valuations produce warnings, not fabricated estimates.
-- Missing provider credentials prevent chat startup but do not prevent local
-  reminder and reporting commands.
-- The CLI handles interruption without corrupting the database.
+- Missing provider credentials leave the TUI available for local login and
+  settings, but prevent model prompts. They do not prevent reminder commands.
+- The TUI and CLI handle interruption without corrupting the database or leaving
+  the terminal in raw mode.
 
 ## 11. MVP acceptance criteria
 
@@ -322,7 +341,9 @@ The first runnable version is complete when automated tests prove that:
 5. net worth uses the latest eligible asset valuation and stays separated by
    currency;
 6. the Pi agent exposes only the documented finance tools; and
-7. the CLI can run local reminder checks without an LLM API key.
+7. the CLI can run local reminder checks without an LLM API key; and
+8. runtime settings and credentials persist separately without exposing secrets
+   to the model or session transcript.
 
 ## 12. Deferred extensions
 

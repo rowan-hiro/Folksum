@@ -1,16 +1,21 @@
 import { Agent, type AgentMessage } from "@earendil-works/pi-agent-core";
-import { createModels, type Model, type Api } from "@earendil-works/pi-ai";
-import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
-import { googleProvider } from "@earendil-works/pi-ai/providers/google";
-import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
+import type { Model, Api, MutableModels } from "@earendil-works/pi-ai";
 
+import type { RuntimeThinkingLevel } from "../../app/config.ts";
 import { FinanceApplication, type FinanceApplicationResult } from "../../app/finance-application.ts";
 import type { IdentityScope } from "../../app/identity.ts";
 import { SessionIdentityService, type SessionMessageRole } from "../../app/session.ts";
+import { FileCredentialStore } from "./credential-store.ts";
+import {
+	createHomeWealthModels,
+	type SupportedPiProviderId,
+} from "./models.ts";
+import { PiRuntimeSettingsController } from "./settings.ts";
+import { createRuntimeSettingsTool } from "./settings-tool.ts";
 import { buildFinanceSystemPrompt } from "./system-prompt.ts";
 import { createFinanceTools, type PiConfirmationRequest } from "./tools.ts";
 
-export type PiProviderId = "openai" | "anthropic" | "google";
+export type PiProviderId = SupportedPiProviderId;
 type PersistableAgentMessage = Extract<AgentMessage, { role: "user" | "assistant" | "toolResult" }>;
 
 export interface PiRuntimeConfig {
@@ -20,6 +25,9 @@ export interface PiRuntimeConfig {
 	identityService: SessionIdentityService;
 	scope: IdentityScope;
 	currentDate: string;
+	thinkingLevel?: RuntimeThinkingLevel;
+	models?: MutableModels;
+	settingsController?: PiRuntimeSettingsController;
 	onConfirmationRequired?: (request: PiConfirmationRequest) => void;
 }
 
@@ -63,62 +71,126 @@ export class PiRuntimeAdapter {
 	emitText(delta: string): void {
 		this.textSink?.(delta);
 	}
+
+	applyRuntimeSettings(model: Model<Api>, thinkingLevel: RuntimeThinkingLevel): void {
+		this.agent.state.model = model;
+		this.agent.state.thinkingLevel = thinkingLevel;
+	}
 }
 
 export async function createPiRuntime(config: PiRuntimeConfig): Promise<PiRuntimeAdapter> {
-	const models = createModels();
-	models.setProvider(createProvider(config.provider));
-	const auth = await models.checkAuth(config.provider);
+	const models = resolveModels(config);
+	const selected = config.settingsController?.resolve() ?? {
+		provider: config.provider,
+		model: requireModel(models.getModel(config.provider, config.modelId), config.provider, config.modelId),
+		thinkingLevel: config.thinkingLevel ?? "low",
+	};
+	const auth = await models.checkAuth(selected.provider);
 	if (!auth) {
-		throw new Error(`Provider ${config.provider} is not configured. Set its API key environment variable.`);
+		throw new Error(
+			`Provider ${selected.provider} is not configured. Sign in from the local TUI or configure its supported environment credential.`,
+		);
 	}
-	const model = requireModel(models.getModel(config.provider, config.modelId), config.provider, config.modelId);
 	const restoredMessages = config.identityService
 		.loadMessages(config.scope.sessionId)
 		.map((stored) => stored.content)
 		.filter(isAgentMessage);
-	const tools = createFinanceTools({
+	const financeTools = createFinanceTools({
 		application: config.application,
 		scope: config.scope,
 		...(config.onConfirmationRequired ? { onConfirmationRequired: config.onConfirmationRequired } : {}),
 	});
+	const tools = config.settingsController
+		? [...financeTools, createRuntimeSettingsTool(config.settingsController)]
+		: financeTools;
 	const agent = new Agent({
 		initialState: {
 			systemPrompt: buildFinanceSystemPrompt(config.scope, config.currentDate),
-			model,
-			thinkingLevel: "low",
+			model: selected.model,
+			thinkingLevel: selected.thinkingLevel,
 			tools,
 			messages: restoredMessages,
 		},
 		streamFn: models.streamSimple.bind(models),
 		sessionId: config.scope.sessionId,
 		toolExecution: "sequential",
+		...(config.settingsController
+			? { prepareNextTurn: () => config.settingsController?.prepareNextTurn() }
+			: {}),
 	});
 	const adapter = new PiRuntimeAdapter(agent, config.application, config.scope);
+	config.settingsController?.attach(adapter);
 	agent.subscribe((event) => {
 		if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
 			adapter.emitText(event.assistantMessageEvent.delta);
 		}
 		if (event.type === "message_end" && isAgentMessage(event.message)) {
+			const persisted = projectPersistableAgentMessage(event.message);
 			config.identityService.appendMessage(
 				config.scope.sessionId,
-				toStoredRole(event.message.role),
-				event.message,
+				toStoredRole(persisted.role),
+				persisted,
 			);
 		}
 	});
 	return adapter;
 }
 
-function createProvider(provider: PiProviderId) {
-	switch (provider) {
-		case "openai":
-			return openaiProvider();
-		case "anthropic":
-			return anthropicProvider();
-		case "google":
-			return googleProvider();
+/**
+ * Keep only fields required to restore a Pi conversation. Provider diagnostics,
+ * deferred handles, response identifiers, and tool details may contain opaque
+ * upstream data and must never cross the SQLite persistence boundary.
+ */
+export function projectPersistableAgentMessage(
+	message: PersistableAgentMessage,
+): PersistableAgentMessage {
+	switch (message.role) {
+		case "user":
+			return {
+				role: "user",
+				content: structuredClone(message.content),
+				timestamp: message.timestamp,
+			};
+		case "assistant":
+			return {
+				role: "assistant",
+				content: structuredClone(message.content),
+				api: message.api,
+				provider: message.provider,
+				model: message.model,
+				usage: structuredClone(message.usage),
+				stopReason: message.stopReason,
+				timestamp: message.timestamp,
+			};
+		case "toolResult":
+			return {
+				role: "toolResult",
+				toolCallId: message.toolCallId,
+				toolName: message.toolName,
+				content: structuredClone(message.content),
+				...(message.usage ? { usage: structuredClone(message.usage) } : {}),
+				...(message.addedToolNames
+					? { addedToolNames: [...message.addedToolNames] }
+					: {}),
+				isError: message.isError,
+				timestamp: message.timestamp,
+			};
 	}
+}
+
+function resolveModels(config: PiRuntimeConfig): MutableModels {
+	if (
+		config.models &&
+		config.settingsController &&
+		config.models !== config.settingsController.models
+	) {
+		throw new Error("The runtime and settings controller must share the same Pi model catalog.");
+	}
+	return (
+		config.models ??
+		config.settingsController?.models ??
+		createHomeWealthModels({ credentials: new FileCredentialStore() })
+	);
 }
 
 function requireModel(model: Model<Api> | undefined, provider: string, modelId: string): Model<Api> {

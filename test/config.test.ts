@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 
-import { ApplicationConfigError, loadApplicationConfig } from "../src/app/config.ts";
+import {
+	ApplicationConfigError,
+	loadApplicationConfig,
+	patchApplicationConfig,
+} from "../src/app/config.ts";
 
 function createDirectory(context: TestContext): string {
 	const directory = mkdtempSync(join(tmpdir(), "home-wealth-config-"));
@@ -26,6 +30,7 @@ test("uses defaults when the default JSON configuration file is absent", (contex
 		memberName: "Local Owner",
 		timezone: "Asia/Hong_Kong",
 		provider: "openai",
+		thinkingLevel: "low",
 	});
 });
 
@@ -44,6 +49,7 @@ test("loads common settings from a JSON file", (context) => {
 			timezone: "America/New_York",
 			provider: "anthropic",
 			model: "example-model",
+			thinkingLevel: "high",
 		}),
 	);
 
@@ -59,6 +65,7 @@ test("loads common settings from a JSON file", (context) => {
 		timezone: "America/New_York",
 		provider: "anthropic",
 		model: "example-model",
+		thinkingLevel: "high",
 	});
 });
 
@@ -77,6 +84,7 @@ test("environment variables override individual JSON settings", (context) => {
 			timezone: "America/New_York",
 			provider: "anthropic",
 			model: "file-model",
+			thinkingLevel: "minimal",
 		}),
 	);
 
@@ -93,6 +101,7 @@ test("environment variables override individual JSON settings", (context) => {
 			HWM_TIMEZONE: "Asia/Tokyo",
 			HWM_PROVIDER: "google",
 			HWM_MODEL: "environment-model",
+			HWM_THINKING_LEVEL: "xhigh",
 		},
 	});
 
@@ -105,6 +114,71 @@ test("environment variables override individual JSON settings", (context) => {
 	assert.equal(config.timezone, "Asia/Tokyo");
 	assert.equal(config.provider, "google");
 	assert.equal(config.model, "environment-model");
+	assert.equal(config.thinkingLevel, "xhigh");
+});
+
+test("atomically patches only non-secret runtime settings and preserves other JSON values", (context) => {
+	const directory = createDirectory(context);
+	const path = join(directory, "nested", "config.json");
+
+	patchApplicationConfig(
+		path,
+		{ provider: "openai-codex", model: "gpt-5.6-sol", thinkingLevel: "medium" },
+		{ env: {} },
+	);
+	const firstWrite = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+	assert.deepEqual(firstWrite, {
+		provider: "openai-codex",
+		model: "gpt-5.6-sol",
+		thinkingLevel: "medium",
+	});
+	assert.equal(statSync(path).mode & 0o777, 0o600);
+
+	writeFileSync(
+		path,
+		JSON.stringify({ ...firstWrite, householdName: "Preserved Household", timezone: "Asia/Tokyo" }),
+	);
+	patchApplicationConfig(path, { model: "gpt-5.5" }, { env: {} });
+	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), {
+		provider: "openai-codex",
+		model: "gpt-5.5",
+		thinkingLevel: "medium",
+		householdName: "Preserved Household",
+		timezone: "Asia/Tokyo",
+	});
+});
+
+test("rejects runtime patches that are overridden by environment variables", (context) => {
+	const directory = createDirectory(context);
+	const path = join(directory, "config.json");
+	writeFileSync(path, JSON.stringify({ provider: "openai", model: "gpt-4.1" }));
+
+	assert.throws(
+		() => patchApplicationConfig(path, { provider: "google" }, { env: { HWM_PROVIDER: "openai" } }),
+		/HWM_PROVIDER/,
+	);
+	assert.throws(
+		() =>
+			patchApplicationConfig(
+				path,
+				{ thinkingLevel: "high" },
+				{ env: { HWM_THINKING_LEVEL: "low" } },
+			),
+		/HWM_THINKING_LEVEL/,
+	);
+	assert.throws(
+		() =>
+			patchApplicationConfig(
+				path,
+				{ databasePath: "other.db" } as never,
+				{ env: {} },
+			),
+		/cannot be changed at runtime/,
+	);
+	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), {
+		provider: "openai",
+		model: "gpt-4.1",
+	});
 });
 
 test("rejects missing explicit files and invalid JSON settings", (context) => {
@@ -115,10 +189,21 @@ test("rejects missing explicit files and invalid JSON settings", (context) => {
 	);
 
 	const path = join(directory, "invalid.json");
+	writeFileSync(path, JSON.stringify({ provider: "openai-codex", thinkingLevel: "max" }));
+	const codexConfig = loadApplicationConfig({ cwd: directory, env: { HWM_CONFIG_PATH: path } });
+	assert.equal(codexConfig.provider, "openai-codex");
+	assert.equal(codexConfig.thinkingLevel, "max");
+
 	writeFileSync(path, JSON.stringify({ provider: "unknown" }));
 	assert.throws(
 		() => loadApplicationConfig({ cwd: directory, env: { HWM_CONFIG_PATH: path } }),
 		/Unsupported provider/,
+	);
+
+	writeFileSync(path, JSON.stringify({ thinkingLevel: "extreme" }));
+	assert.throws(
+		() => loadApplicationConfig({ cwd: directory, env: { HWM_CONFIG_PATH: path } }),
+		/Unsupported thinking level/,
 	);
 
 	writeFileSync(path, "not json");

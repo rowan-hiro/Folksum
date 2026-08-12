@@ -6,5 +6,6 @@
 	"session": "default",
 	"memberName": "Local Owner",
 	"timezone": "Asia/Hong_Kong",
-	"provider": "openai"
+	"provider": "openai",
+	"thinkingLevel": "low"
 }

@@ -29,14 +29,17 @@ surface, and acceptance criteria.
 
 ## Repository layout
 
-- `src/channels/cli.ts` is the executable CLI adapter for chat, reminder checks,
-  and scheduled reminder generation.
+- `src/channels/cli.ts` is the executable entry point for the TUI, legacy
+  line-oriented chat, reminder checks, and scheduled reminder generation.
+- `src/channels/tui.ts` owns the local `pi-tui` presentation layer, including
+  model settings, provider login, streaming output, and confirmations.
 - `src/app/` contains Finance IR orchestration, identity and session handling,
   confirmation policy, memory rules, and scheduling.
 - `src/core/` contains SQLite persistence, exact-money helpers, domain types,
   and deterministic wealth and ledger services.
-- `src/runtime/pi/` is the narrow adapter to `pi-agent-core` and `pi-ai`. Keep
-  provider-specific model behavior out of the finance domain.
+- `src/runtime/pi/` is the narrow adapter to `pi-agent-core` and `pi-ai`. It also
+  owns the non-secret runtime-settings controller and the user-scoped credential
+  store. Keep provider-specific model behavior out of the finance domain.
 - `test/` contains Node test-runner suites for the domain and runtime boundary.
 - `.intent-log/` and `.decision-log/` contain DriftSeal records and must be
   committed with the changes they describe.
@@ -73,19 +76,37 @@ runtime strategy intentionally changes.
 
 ## Running the application
 
-Start interactive chat with:
+Start the full-screen interactive TUI with:
 
 ```sh
-HWM_MODEL=<installed-pi-model-id> npm start
+npm start
+```
+
+Open settings with `Ctrl+O` or `/settings`. The TUI can select the provider,
+model, and thinking level, and can run the provider-owned API-key or OAuth login
+flow. Non-secret choices are persisted in the JSON configuration file. Provider
+credentials are kept separately in `~/.home-wealth-manager/auth.json`; override
+that location with `HWM_AUTH_PATH` when needed. The credential directory and
+file are created with `0700` and `0600` permissions on POSIX systems.
+
+The model may update only provider, model, and thinking level through the
+`update_runtime_settings` tool. Credentials must never be pasted into chat or
+exposed to the model; configure them through the local TUI login flow. Existing
+provider credential environment variables remain supported by `pi-ai`.
+
+The legacy line-oriented chat remains available for scripting or basic
+terminals and requires a configured model:
+
+```sh
+HWM_MODEL=<installed-pi-model-id> npm run chat
 ```
 
 Common settings are loaded from `.data/config.json` when it exists. Set
 `HWM_CONFIG_PATH` to use another JSON file; a relative path is resolved from the
 process working directory. Copy `config.example.json` to `.data/config.json` as
-a starting point. Every `HWM_*` setting below overrides the corresponding JSON
-value, so provider credentials can remain environment-only. Chat also requires
-the selected provider's credentials to be available to the Pi runtime. The
-local-only commands do not require an LLM credential:
+a starting point. Every non-secret `HWM_*` setting below overrides the
+corresponding JSON value. The local-only commands do not require an LLM
+credential:
 
 ```sh
 npm run reminders
@@ -108,8 +129,10 @@ Runtime configuration, in descending precedence:
 | `HWM_SESSION` | `session` | `default` | CLI conversation key |
 | `HWM_MEMBER_NAME` | `memberName` | `Local Owner` | Name used when creating the initial member |
 | `HWM_TIMEZONE` | `timezone` | `Asia/Hong_Kong` | Timezone used for the initial member and reminders |
-| `HWM_PROVIDER` | `provider` | `openai` | Pi model provider: `openai`, `anthropic`, or `google` |
-| `HWM_MODEL` | `model` | none | Required Pi model ID for interactive chat |
+| `HWM_PROVIDER` | `provider` | `openai` | Pi model provider: `openai`, `openai-codex`, `anthropic`, or `google` |
+| `HWM_MODEL` | `model` | none | Pi model ID; required before sending a chat prompt |
+| `HWM_THINKING_LEVEL` | `thinkingLevel` | `low` | Pi reasoning level from `off` through `max`, subject to model support |
+| `HWM_AUTH_PATH` | none | `~/.home-wealth-manager/auth.json` | User-scoped provider credential file |
 
 <!-- driftseal -->
 <!-- driftseal-version: 5 -->
