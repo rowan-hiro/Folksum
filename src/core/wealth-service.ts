@@ -502,7 +502,7 @@ export class WealthService {
 			.prepare(
 				`SELECT * FROM transactions
 				 WHERE household_id = ? AND occurred_at >= ? AND occurred_at < ?
-				 ORDER BY occurred_at, created_at, id`,
+				 ORDER BY occurred_at, created_at, rowid`,
 			)
 			.all(
 				this.household.id,
