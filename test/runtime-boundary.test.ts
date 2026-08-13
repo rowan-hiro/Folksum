@@ -56,9 +56,12 @@ test("isolates Pi model imports to the runtime adapter and Pi TUI imports to its
 	for (const file of listTypeScriptFiles(join(projectRoot, "src"))) {
 		const source = readFileSync(file, "utf8");
 		assert.doesNotMatch(source, /from\s+["'](?:\.\.\/)+pi\//, file);
-		const isRuntimeAdapter = file.includes(`${join("runtime", "pi")}/`);
-		const isTuiChannel = file.includes(`${join("channels", "tui")}`);
-		const isTelegramChannel = file.includes(`${join("channels", "telegram")}`);
+		// Normalize to forward slashes: join() mixes separators on Windows and
+		// would misclassify runtime/pi files as outside the adapter boundary.
+		const normalizedFile = file.replaceAll("\\", "/");
+		const isRuntimeAdapter = normalizedFile.includes("runtime/pi/");
+		const isTuiChannel = normalizedFile.includes("channels/tui");
+		const isTelegramChannel = normalizedFile.includes("channels/telegram");
 		if (!isRuntimeAdapter && !isTuiChannel) {
 			assert.doesNotMatch(source, /from\s+["']@earendil-works\//, file);
 		}
