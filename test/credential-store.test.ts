@@ -159,7 +159,11 @@ test("rejects malformed JSON and invalid credential shapes without exposing secr
 });
 
 test("repairs existing auth file permissions before reading secrets", async (context) => {
-	if (process.platform === "win32") context.skip("POSIX permission bits are not available on Windows.");
+	if (process.platform === "win32") {
+		// context.skip does not halt execution; POSIX mode assertions must not run on Windows.
+		context.skip("POSIX permission bits are not available on Windows.");
+		return;
+	}
 	const directory = createDirectory(context);
 	const authPath = join(directory, "auth.json");
 	writeFileSync(authPath, JSON.stringify({ openai: { type: "api_key", key: "old-secret" } }));
@@ -171,7 +175,11 @@ test("repairs existing auth file permissions before reading secrets", async (con
 });
 
 test("repairs the default credential directory before reading secrets", async (context) => {
-	if (process.platform === "win32") context.skip("POSIX permission bits are not available on Windows.");
+	if (process.platform === "win32") {
+		// context.skip does not halt execution; POSIX mode assertions must not run on Windows.
+		context.skip("POSIX permission bits are not available on Windows.");
+		return;
+	}
 	const directory = createDirectory(context);
 	const authDirectory = join(directory, ".folksum");
 	const authPath = join(authDirectory, "auth.json");

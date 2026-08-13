@@ -9,3 +9,5 @@ coverage/
 *.db-wal
 /pi/
 .codex/
+.kimi-code/
+.cursor/

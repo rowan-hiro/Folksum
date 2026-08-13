@@ -11,7 +11,13 @@ import { WealthService } from "../src/core/wealth-service.ts";
 test("migrates v6 statements and allocations to lightweight tracking without rewriting the ledger", (context) => {
 	const directory = mkdtempSync(join(tmpdir(), "folksum-migration-"));
 	const path = join(directory, "wealth.db");
-	context.after(() => rmSync(directory, { recursive: true, force: true }));
+	let migratedForCleanup: WealthDatabase | undefined;
+	context.after(() => {
+		// Windows refuses to unlink an open database file, and after hooks run in
+		// registration order, so the close must precede the removal in one hook.
+		migratedForCleanup?.close();
+		rmSync(directory, { recursive: true, force: true });
+	});
 
 	const original = new WealthDatabase(path);
 	const originalService = new WealthService(original, {
@@ -99,7 +105,7 @@ test("migrates v6 statements and allocations to lightweight tracking without rew
 	downgrade.close();
 
 	const migrated = new WealthDatabase(path);
-	context.after(() => migrated.close());
+	migratedForCleanup = migrated;
 	assert.equal(
 		(migrated.connection.prepare("PRAGMA user_version").get() as { user_version: number }).user_version,
 		9,

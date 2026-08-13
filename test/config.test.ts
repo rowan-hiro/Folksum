@@ -162,7 +162,7 @@ test("atomically patches writable non-secret settings and preserves other JSON v
 		thinkingLevel: "medium",
 		cardTrackingMode: "integrated",
 	});
-	assert.equal(statSync(path).mode & 0o777, 0o600);
+	if (process.platform !== "win32") assert.equal(statSync(path).mode & 0o777, 0o600);
 
 	writeFileSync(
 		path,
