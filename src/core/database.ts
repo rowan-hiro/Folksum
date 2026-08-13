@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 
 export class WealthDatabase {
 	readonly connection: DatabaseSync;
@@ -548,6 +548,30 @@ export class WealthDatabase {
 					END;
 
 				PRAGMA user_version = 8;
+				COMMIT;
+			`);
+			version = 8;
+		}
+
+		if (version < 9) {
+			this.connection.exec(`
+				BEGIN;
+
+				CREATE TABLE channel_update_receipts (
+					id TEXT PRIMARY KEY,
+					channel TEXT NOT NULL CHECK (channel IN ('telegram', 'web', 'cli', 'scheduler')),
+					external_update_id TEXT NOT NULL,
+					status TEXT NOT NULL CHECK (status IN ('processing', 'completed', 'failed')),
+					claimed_at TEXT NOT NULL,
+					completed_at TEXT,
+					error_message TEXT,
+					UNIQUE (channel, external_update_id)
+				) STRICT;
+
+				CREATE INDEX channel_update_receipts_status_idx
+					ON channel_update_receipts(channel, status, claimed_at);
+
+				PRAGMA user_version = 9;
 				COMMIT;
 			`);
 		}

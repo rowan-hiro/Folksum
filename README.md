@@ -36,9 +36,66 @@ line-oriented chat and unattended reminder processing:
 
 ```sh
 folksum chat
+folksum telegram
+folksum members
 folksum reminders
 folksum schedule
 ```
+
+## Telegram alpha
+
+The first interaction alpha runs a Telegram Bot locally with long polling. It
+accepts allow-listed text messages, presents one-tap disambiguation and
+confirmation buttons, and delivers deterministic credit-card repayment
+reminders. It does not require a public URL or webhook.
+
+Create a dedicated private finance group and a bot through BotFather. Disable
+the bot's privacy mode if it must receive ordinary group messages. Initialize
+Folksum once, list the local household member identifiers, and prepare the
+private Telegram configuration:
+
+```sh
+folksum members
+cp telegram.example.json .data/telegram.json
+chmod 600 .data/telegram.json
+```
+
+Replace the example chat, topic, user, and member identifiers. `chatId`,
+`threadId`, and `userId` are decimal strings so Telegram identifiers are never
+rounded. Every reminder destination must also appear in `allowedChats`.
+`memberId` must refer to a member returned by `folksum members`.
+
+Configure the model credential through the local TUI, then supply the bot token
+only through the environment and start the long-polling process:
+
+```sh
+FOLKSUM_TELEGRAM_BOT_TOKEN=<bot-token> folksum telegram
+```
+
+Set `FOLKSUM_TELEGRAM_CONFIG_PATH` when the private file is not
+`.data/telegram.json`. The bot token is never accepted in JSON, stored in
+SQLite, or sent to the model. The private mapping file is rejected on POSIX
+systems unless group and other users have no access.
+
+Folksum refuses to start long polling while the bot has an active webhook and
+does not remove that webhook automatically. Updates from any chat, topic, or
+user outside the explicit allowlists are ignored before session or receipt
+state is created. Authorized update IDs are recorded locally so Telegram
+redelivery cannot repeat an operation; an update interrupted by a process crash
+is marked failed rather than replayed automatically, and the user may resend it
+as a new message.
+
+Voice transcription is deliberately disabled in this alpha. Voice files are
+not downloaded or sent to the model; the bot asks the user to send text. A
+channel-neutral `VoiceTranscriber` interface is reserved for a later local
+transcription implementation.
+
+SQLite remains the financial system of record, but messages and bot replies
+necessarily traverse Telegram. Provider prompts also leave the machine under
+the configured model provider's policy, while the projected conversation
+history is retained in local SQLite. Use a dedicated finance-only chat and set
+Telegram's transcript retention policy accordingly. Reminder messages never
+initiate payments.
 
 ## Bookkeeping profiles and exports
 
@@ -146,12 +203,14 @@ Environment variables override individual JSON values:
 | `FOLKSUM_MODEL` | `model` | none |
 | `FOLKSUM_THINKING_LEVEL` | `thinkingLevel` | `low` |
 | `FOLKSUM_AUTH_PATH` | none | `~/.folksum/auth.json` |
+| `FOLKSUM_TELEGRAM_CONFIG_PATH` | none | `.data/telegram.json` |
+| `FOLKSUM_TELEGRAM_BOT_TOKEN` | none | none; required by `folksum telegram` |
 
 Provider credentials are stored separately in
 `~/.folksum/auth.json`. Use the TUI settings screen for API-key or
 OAuth login. Never put credentials in the JSON configuration or SQLite database.
 
-The `reminders` and `schedule` commands do not require a configured model or
+The `members`, `reminders`, and `schedule` commands do not require a configured model or
 provider credential.
 
 ## Verify and pack a release

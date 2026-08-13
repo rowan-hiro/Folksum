@@ -96,6 +96,37 @@ that owns identity resolution, session loading, confirmation state, and runtime
 selection. A scheduler job normally does not call an LLM: due-date calculation and
 notification rendering are deterministic.
 
+#### 3.1.1 Telegram alpha channel
+
+The first external channel is a Telegram Bot using `grammy` and long polling.
+The process requires no public inbound endpoint and refuses to run while an
+outgoing webhook is configured. A strict private JSON file maps allow-listed
+Telegram user IDs to existing household members and allow-listed chat/topic
+destinations. The bot token is environment-only and never enters JSON, SQLite,
+logs, model messages, or tool results.
+
+The adapter resolves `userId` plus `chatId:threadId-or-root` through the common
+session service. Runner concurrency is serialized by that same user/chat/topic
+key, so one conversation stays ordered while unrelated household members may be
+processed concurrently. Each prompt uses a short-lived Pi runtime restored from
+the session transcript; the channel does not receive Finance IR or database
+authority.
+
+Confirmation and finite disambiguation choices are channel-neutral application
+events. Telegram callback payloads carry only a random 16-character, in-memory,
+single-use action ID and a bounded choice bit/index; they never carry a pending
+operation token or financial payload. Consumption rechecks actor and session.
+Restarting the process intentionally invalidates old buttons. A choice resumes
+the same model session but has no confirmation authority; a financial mutation
+still passes through Finance IR and the confirmation policy.
+
+The reminder loop runs immediately and every fifteen minutes, evaluates each
+recipient's local date, and renders the existing outbox payload without an LLM.
+Failures use bounded exponential retry and stop after five attempts. Voice
+updates are acknowledged without calling `getFile`; the application defines a
+`VoiceTranscriber` interface for a future local implementation but does not
+download or persist voice data in this alpha.
+
 ### 3.2 Finance IR
 
 Finance IR is the stable boundary between probabilistic interpretation and
@@ -258,14 +289,33 @@ one currency. A currency conversion is represented as two linked balanced
 transactions plus explicit rate metadata; conversion entry is outside the MVP.
 Net-worth and spending reports return a map keyed by currency.
 
-### 4.4 Planned SQLite ledger integrity boundary (schema version 9)
+### 4.4 Channel update receipts (schema version 9)
+
+Schema version 9 adds `channel_update_receipts` for at-most-once handling at an
+external channel boundary. After Telegram chat and user allowlists pass, the
+application atomically claims the bot/update identifier before resolving a
+session or invoking a model. A duplicate returns the existing terminal or
+processing receipt and performs no work. Successful handling marks the receipt
+completed; a handled user error is also terminal, while an internal failure or
+interrupted process is marked failed. Failed receipts are not automatically
+reclaimed because a model or Telegram response may have completed before the
+process lost local acknowledgement. The user must resend the request as a new
+Telegram update.
+
+Receipts store identifiers and bounded, generic failure categories, not raw
+messages, tool payloads, provider diagnostics, credentials, or callback tokens.
+They add channel idempotency around the existing Finance IR and ledger
+idempotency boundaries rather than replacing either one.
+
+### 4.5 Planned SQLite ledger integrity boundary (schema version 10)
 
 This section is the target design for the next schema migration, not a description
-of schema version 8. Version 8 validates transaction balance in `WealthService`
+of current schema version 9. Version 9 validates transaction balance in `WealthService`
 and relies on the absence of mutation APIs for immutability, while SQLite only
 checks posting amount, foreign-key existence, and account household/currency
-during posting insertion. Schema version 8 adds immutable bookkeeping profile
-revisions and transaction classification snapshots. Version 9 moves the
+during posting insertion. Schema version 8 added immutable bookkeeping profile
+revisions and transaction classification snapshots, and version 9 adds channel
+update receipts without changing ledger storage. Version 10 moves the
 irreducible ledger invariants into SQLite as a second line of defense against
 application bugs and accidental direct SQL.
 
@@ -287,9 +337,9 @@ Database validation is authoritative if application validation is bypassed.
 SQLite `SUM` remains an integer operation: integer overflow aborts the write
 instead of falling back to an approximate floating-point total.
 
-#### 4.4.1 Schema shape and write protocol
+#### 4.5.1 Schema shape and write protocol
 
-Version 9 will denormalize `household_id` and `currency` onto `postings` and use
+Version 10 will denormalize `household_id` and `currency` onto `postings` and use
 composite foreign keys to bind those values to both parents:
 
 ```text
@@ -330,14 +380,14 @@ both `transactions` and `postings` immutable. An account trigger freezes
 Existing idempotency-key uniqueness, reversal links, and `ON DELETE RESTRICT`
 relationships remain unchanged.
 
-#### 4.4.2 Migration and failure policy
+#### 4.5.2 Migration and failure policy
 
-The version 8 to 9 migration runs as one transaction and fails closed. Before
+The version 9 to 10 migration runs as one transaction and fails closed. Before
 changing the schema it checks every existing transaction for posting count,
 integer balance, parent existence, household equality, and currency equality.
 Invalid historical data is never repaired, rounded, deleted, or balanced with a
 synthetic posting; the migration reports the violated invariant and leaves the
-database at version 8.
+database at version 9.
 
 The migration rebuilds `postings` to add the deferred composite key and new
 columns, but avoids rebuilding `transactions`, which is already referenced by
@@ -350,10 +400,10 @@ continue to enable `PRAGMA foreign_keys = ON` for its connection.
 
 Automated acceptance tests must prove:
 
-- a valid version 8 file containing ordinary entries, a reversal, and an
+- a valid version 9 file containing ordinary entries, a reversal, and an
   allocated card payment migrates without changing identifiers, balances,
   posting order, or payment links;
-- an unbalanced, underspecified, orphaned, or cross-household/currency version 8
+- an unbalanced, underspecified, orphaned, or cross-household/currency version 9
   database fails migration without changing its schema version or contents;
 - direct SQL cannot commit an orphan, a zero- or one-posting transaction, an
   unbalanced entry, a cross-scope entry, or a posting appended to a published
@@ -420,11 +470,13 @@ idempotent retries without treating incomplete legacy ledgers as reconciled.
 
 The default reminder policy emits reminders 7, 3, and 1 day before the due date,
 on the due date, and once per day while overdue. A delivery record deduplicates a
-reminder for the same statement, threshold, and channel. The MVP has two delivery
+reminder for the same statement, threshold, and channel. The MVP has three delivery
 surfaces:
 
 - display due reminders whenever the interactive CLI starts; and
-- a non-interactive command suitable for cron or a future notification adapter.
+- a non-interactive command suitable for cron; and
+- deterministic Telegram delivery from the long-running alpha process, with
+  bounded retry and no model call.
 
 Recording a repayment and its allocation is atomic in both modes. The application
 rejects over-allocation, idempotency conflicts, and currency mismatches. Switching
@@ -467,6 +519,7 @@ prices, and automatic price feeds are later extensions.
 | `get_net_worth` | no | Calculate household net worth per currency |
 | `get_spending_summary` | no | Aggregate expense postings over a date range |
 | `update_runtime_settings` | yes, non-financial | Persist and apply only provider, model, and thinking level |
+| `request_user_choice` | no, interaction only | Pause a supported channel turn for one bounded finite choice |
 
 Tools return machine-readable details and concise text for the model. Errors are
 explicit; the model must not claim a write succeeded after a tool error.
@@ -510,6 +563,14 @@ login flow never enter SQLite sessions, model messages, tool arguments, or tool
 results. Login and logout are local TUI actions; the model can neither read nor
 mutate credentials.
 
+Telegram uses a separate strict private JSON file for chat/topic allowlists and
+user-to-member bindings. That file must be owner-only on POSIX systems. The bot
+token is accepted only through `FOLKSUM_TELEGRAM_BOT_TOKEN`; it is not a valid
+property in either JSON configuration. Authorized Telegram text necessarily
+traverses Telegram and then the selected model provider, while the projected Pi
+conversation remains in local SQLite. Voice payloads do not leave Telegram in
+the alpha because the adapter never downloads them.
+
 Bookkeeping profile files are explicit revision-aware import/export documents,
 not a second live configuration source. Active profile revisions and immutable
 per-transaction bookkeeping snapshots remain in SQLite. Local profile and data
@@ -537,6 +598,12 @@ deployment hardening.
 - Export definitions cannot execute code, and exact amounts never pass through
   floating-point conversion.
 - The reminder runner is safe to invoke repeatedly.
+- Telegram update receipts prevent redelivery from re-running handled work;
+  interrupted receipts fail closed and require a new user message.
+- Telegram callbacks are short-lived, single-use, and bound to the originating
+  actor and session; restarting the process invalidates them.
+- Telegram reminder delivery retries at most five times and never initiates a
+  payment.
 - Missing or stale valuations produce warnings, not fabricated estimates.
 - Missing provider credentials leave the TUI available for local login and
   settings, but prevent model prompts. They do not prevent reminder commands.
@@ -560,7 +627,9 @@ The first runnable version is complete when automated tests prove that:
 8. runtime settings and credentials persist separately without exposing secrets
    to the model or session transcript; and
 9. profile revisions, categorization metadata, file concurrency, and declarative
-   export behavior preserve the accounting and runtime boundaries.
+   export behavior preserve the accounting and runtime boundaries; and
+10. Telegram allowlists, receipts, scoped callbacks, reminder retries, and
+    graceful shutdown preserve the same Finance IR and credential boundaries.
 
 ## 12. Deferred extensions
 
@@ -569,7 +638,9 @@ The first runnable version is complete when automated tests prove that:
 - receipt OCR and bank/card imports;
 - FX conversion and historical exchange-rate sources;
 - securities, lots, performance, and capital gains;
-- push, email, and chat notification adapters; and
+- local voice transcription, Telegram Mini Apps, webhooks, and additional chat
+  notification adapters;
+- push and email notification adapters; and
 - bank payment initiation with strong confirmation and reconciliation.
 
 Each extension must preserve the ledger invariants and receive its own security

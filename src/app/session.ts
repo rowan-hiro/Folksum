@@ -44,6 +44,11 @@ export interface BindChannelIdentityInput {
 	externalId: string;
 }
 
+export interface EnsureChannelIdentityResult {
+	created: boolean;
+	member: HouseholdMember;
+}
+
 export interface ResolveIdentityInput {
 	channel: ChannelKind;
 	externalId: string;
@@ -103,6 +108,16 @@ export class SessionIdentityService {
 		return mapMember(row);
 	}
 
+	listMembers(householdId: string): HouseholdMember[] {
+		const rows = this.database.connection
+			.prepare(
+				`SELECT * FROM household_members
+				 WHERE household_id = ? ORDER BY created_at, rowid`,
+			)
+			.all(householdId) as unknown as MemberRow[];
+		return rows.map(mapMember);
+	}
+
 	bindChannelIdentity(input: BindChannelIdentityInput): void {
 		this.getMember(input.memberId);
 		const externalId = requireText(input.externalId, "External identity");
@@ -119,6 +134,28 @@ export class SessionIdentityService {
 			}
 			throw error;
 		}
+	}
+
+	ensureChannelIdentity(input: BindChannelIdentityInput): EnsureChannelIdentityResult {
+		const member = this.getMember(input.memberId);
+		const externalId = requireText(input.externalId, "External identity");
+		const existing = this.database.connection
+			.prepare(
+				`SELECT member_id FROM channel_identities
+				 WHERE channel = ? AND external_id = ?`,
+			)
+			.get(input.channel, externalId) as { member_id: string } | undefined;
+		if (existing) {
+			if (existing.member_id !== member.id) {
+				throw new IdentityError(
+					`Channel identity ${input.channel}:${externalId} is already bound to another member.`,
+				);
+			}
+			return { created: false, member };
+		}
+
+		this.bindChannelIdentity({ ...input, externalId });
+		return { created: true, member };
 	}
 
 	resolve(input: ResolveIdentityInput): IdentityScope {

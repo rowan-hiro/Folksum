@@ -82,3 +82,10 @@ Confirmed after final hardening: profile activation performs validation and opti
 Status: Accepted → Accepted
 
 Confirmed after adding the public bookkeeping DSL: private text overlays compile into the existing semantic profile patch, validation, immutable revision, and optimistic concurrency path; no executable extension point or second runtime source of truth was introduced.
+
+<!-- driftseal-reconciliation: d09d5753-7748-434e-a068-93ac8d30dd21 -->
+### 2026-08-13T12:40:01.168Z — Intent `2026-08-13-002`
+
+Status: Accepted → Accepted
+
+Confirmed after merging the Telegram alpha with the bookkeeping DSL branch: schema version 9 stores channel update receipts without changing semantic profile or ledger invariants, and the deferred physical ledger-integrity migration is renumbered to version 10.

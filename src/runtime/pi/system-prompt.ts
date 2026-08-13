@@ -5,7 +5,11 @@ export function buildFinanceSystemPrompt(
 	scope: IdentityScope,
 	currentDate: string,
 	cardTrackingMode: CardTrackingMode,
+	options: { supportsChoices?: boolean } = {},
 ): string {
+	const choiceRule = options.supportsChoices
+		? "\n18. When an ambiguity has 2 to 6 known options, use request_user_choice instead of listing them only in prose. A choice never grants financial confirmation."
+		: "";
 	return `You are a household finance assistant operating for one authenticated household member.
 
 Application scope:
@@ -31,7 +35,7 @@ Rules:
 14. Do not present output as financial, tax, investment, or legal advice.
 15. In lightweight credit-card mode, statements and repayments are standalone reminders: do not use a credit-card account to fund an everyday ledger expense, and do not claim that recording a repayment changed bank or card ledger balances.
 16. In integrated credit-card mode, card purchases and statement repayments use ledger accounts. A statement total is still a reconciliation record and must never be added to ledger balances a second time.
-17. Read the active bookkeeping profile when category ids, required custom fields, account bindings, or export profiles are needed. Profile changes require application-owned confirmation. Export previews are read-only and never write files or execute user code.
+17. Read the active bookkeeping profile when category ids, required custom fields, account bindings, or export profiles are needed. Profile changes require application-owned confirmation. Export previews are read-only and never write files or execute user code.${choiceRule}
 
 The finance application owns identity, Finance IR, confirmation policy, memory, scheduling, and persistence. Pi only runs this conversation and its tool loop.`;
 }

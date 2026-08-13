@@ -25,6 +25,7 @@
 	"files": [
 		"dist",
 		"config.example.json",
+		"telegram.example.json",
 		"README.md"
 	],
 	"engines": {
@@ -33,7 +34,9 @@
 	"dependencies": {
 		"@earendil-works/pi-agent-core": "0.84.1",
 		"@earendil-works/pi-ai": "0.84.1",
-		"@earendil-works/pi-tui": "0.84.1"
+		"@earendil-works/pi-tui": "0.84.1",
+		"@grammyjs/runner": "2.0.3",
+		"grammy": "1.45.1"
 	},
 	"devDependencies": {
 		"@types/node": "24.12.4",
@@ -48,6 +51,7 @@
 		"chat": "node dist/channels/cli.js chat",
 		"reminders": "node dist/channels/cli.js reminders",
 		"schedule": "node dist/channels/cli.js schedule",
+		"telegram": "node dist/channels/cli.js telegram",
 		"dev": "node --experimental-strip-types --experimental-sqlite src/channels/cli.ts tui",
 		"test": "node --experimental-strip-types --experimental-sqlite --test",
 		"typecheck": "tsc --noEmit",
