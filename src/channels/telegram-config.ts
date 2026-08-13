@@ -86,7 +86,7 @@ function readPrivateJson(path: string, platform: NodeJS.Platform): Record<string
 	if (!stats.isFile() || stats.isSymbolicLink()) {
 		throw new TelegramConfigError(`Telegram configuration path ${path} must be a regular file.`);
 	}
-	if (platform !== "win32" && (stats.mode & 0o077) !== 0) {
+	if (platform !== "win32" && typeof process.getuid === "function" && (stats.mode & 0o077) !== 0) {
 		throw new TelegramConfigError(
 			`Telegram configuration file ${path} must not be accessible by group or other users; use mode 0600.`,
 		);

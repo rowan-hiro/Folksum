@@ -56,7 +56,7 @@ test("loads a strict private Telegram configuration with string identifiers", (c
 	assert.equal(findTelegramIdentity(config, "123456789")?.memberId, "member-1");
 });
 
-test("requires the token only from the environment and enforces private file permissions", (context) => {
+test("requires the token only from the environment", (context) => {
 	const directory = createDirectory(context);
 	const path = join(directory, "telegram.json");
 	writePrivateJson(path, {
@@ -69,6 +69,28 @@ test("requires the token only from the environment and enforces private file per
 		() => loadTelegramConfig({ cwd: directory, env: { FOLKSUM_TELEGRAM_CONFIG_PATH: path } }),
 		/FOLKSUM_TELEGRAM_BOT_TOKEN is required/,
 	);
+	assert.doesNotThrow(() =>
+		loadTelegramConfig({
+			cwd: directory,
+			env: { FOLKSUM_TELEGRAM_BOT_TOKEN: TOKEN, FOLKSUM_TELEGRAM_CONFIG_PATH: path },
+		}),
+	);
+});
+
+test("enforces private file permissions when POSIX identity APIs are available", (context) => {
+	if (typeof process.getuid !== "function") {
+		context.skip("POSIX file permissions are not available");
+		return;
+	}
+
+	const directory = createDirectory(context);
+	const path = join(directory, "telegram.json");
+	writePrivateJson(path, {
+		version: 1,
+		allowedChats: [{ chatId: "-1001" }],
+		identities: [{ userId: "101", memberId: "member-1" }],
+	});
+
 	chmodSync(path, 0o644);
 	assert.throws(
 		() =>
