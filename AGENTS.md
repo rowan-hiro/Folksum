@@ -206,7 +206,8 @@ Runtime configuration, in descending precedence:
 | `FOLKSUM_TELEGRAM_BOT_TOKEN` | none | none | Environment-only Telegram bot credential |
 
 <!-- driftseal -->
-<!-- driftseal-version: 8 -->
+<!-- driftseal-version: 11 -->
+<!-- driftseal-log-language: en -->
 
 ## Agent protocol: intent write-ahead log
 
@@ -216,12 +217,19 @@ This `AGENTS.md` protocol is the source of truth. Use the `driftseal` CLI by
 default; the companion skill only helps discover and resume the workflow, while
 MCP and lifecycle hooks are optional adapters.
 
+**Log language:** `en`. Write intent-log prose (intent, note,
+verify-result, and reclaim/unreclaim reason) in that language. Keep command
+names, flags, status tokens, and ids in English.
+
 1. **Write intent first**, before modifying, creating, or deleting files, or
-   making any other change that may need a rollback:
+   making any other non-Git change that may need a rollback:
    `driftseal begin "<what this round will accomplish>" --verify "<command or check that proves it>"`.
    Add one `--decision <id>` for each existing decision this round may change.
-   Single-step commands that only build, check, or record work already done
-   (compiling, running tests, `git add`/`git commit`) need no intent.
+   Git operations never need an intent and are not included in the intent log;
+   Git maintains their history. This includes inspection, branch and worktree
+   management, staging, commits, merges, rebases, cherry-picks, tags, and pushes.
+   Single-step commands that only build or check work already done, such as
+   compiling or running tests, also need no intent.
 2. **Execute only the intent.** Scope change? Close the current intent
    (`driftseal end -s partial|abandoned -n "<why>"`) and `driftseal begin` a new one.
 3. **Verify, then close**: run the declared verification, then
@@ -234,9 +242,9 @@ MCP and lifecycle hooks are optional adapters.
    the final content hash is recorded. Interrupted reconciliation is recovered
    by the next linked `decision update` or successful `end`. Closing as
    `failed` or `abandoned` cancels pending recovery for that intent.
-   An authorized Git commit that only stages and records the verified changes and
-   just-closed log finalizes that round without requiring a new intent. Any content
-   change made while preparing the commit does require a new intent.
+   Git operations remain subject to normal authorization and safety requirements
+   even though they do not require an intent. Any non-Git content change made while
+   preparing a Git operation does require a new intent.
 4. **Re-anchor after context loss**: run `driftseal status` and `driftseal log --last 3` before
    doing anything else. The open intent is the source of truth: resume it when its
    objective still matches the current task; otherwise close it (`partial` or
@@ -247,12 +255,16 @@ MCP and lifecycle hooks are optional adapters.
 `driftseal` commands or the MCP tools. Retire meaningless closed records with
 `driftseal reclaim [id ...] --reason "<why>"` — it appends a marker, never
 deletes log lines; `driftseal unreclaim <id> --reason "<why>"` restores one.
+After a merge collision, run `driftseal absorb` rather than editing the log;
+if both sides still have an open intent, add `--abandon-theirs` or
+`--abandon-ours`.
 
 Log: `.intent-log/events.jsonl` (override with `$DRIFTSEAL_HOME`); commit it with the code.
 <!-- /driftseal -->
 
 <!-- driftseal-decisions -->
-<!-- driftseal-decisions-version: 8 -->
+<!-- driftseal-decisions-version: 11 -->
+<!-- driftseal-log-language: en -->
 
 ## Agent protocol: decision log
 
@@ -261,6 +273,10 @@ recovered from the intent log and Git history: a rejected or deferred path worth
 revisiting, non-obvious rationale behind a long-lived or costly-to-reverse accepted
 choice, or a deprecated or superseded decision. Do not record routine, local,
 readily reversible choices.
+
+**Log language:** `en`. Write decision-log prose (title, context,
+outcome, drivers, options, consequences, and update notes) in that language.
+Keep MADR section headings, status tokens, and ids in English.
 
 `driftseal decision add "<title>" --context "<problem and constraints>" --outcome "<decision and rationale>" --driver "<decision driver>" --option "<considered option>" --consequence "<result>"`
 
@@ -272,5 +288,7 @@ Count postponed choices with `driftseal decision list --status deferred --count`
 then review them with `driftseal decision list --status deferred`.
 When an intent declares an existing decision with `--decision <id>`, use
 `driftseal decision update` to record its status transition or explicit confirmation.
+After a merge, colliding decision ids are remapped with `driftseal absorb`;
+concurrent edits of a shared decision are not auto-merged.
 Commit `.decision-log/` with the code.
 <!-- /driftseal-decisions -->
