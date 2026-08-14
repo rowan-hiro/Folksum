@@ -165,7 +165,11 @@ The default policy is:
 
 Changing these defaults is a typed household rule and remains auditable. A rule
 that requires confirmation for a low-risk mutation stores it as a medium-risk
-pending operation.
+pending operation. Before storing an expense or income confirmation, the
+application validates its summary and binds the active bookkeeping profile
+revision and hash into the pending IR. Confirmation fails closed if that profile
+snapshot is no longer active, so a changed shortcut or rule cannot alter the
+amount or classification after the user saw the summary.
 
 ### 3.4 Memory and rules
 
@@ -220,9 +224,11 @@ participant count rather than dividing the amount. A bound the transaction
 currency cannot express, because it carries more fractional digits than the
 currency scale or because the per-person product leaves the safe ledger range,
 never matches; the explanation reports it as `amountUnrepresentable` instead of
-an ordinary amount miss, so a rule that is silently inapplicable to a currency
-stays visible. Capture shortcuts expand into description, amount, category, and
-field values before classification; explicit capture arguments override the
+an ordinary amount miss. Boolean composition uses three-valued logic: `not`
+preserves the indeterminate state, while `all` and `any` propagate it unless a
+different branch definitively determines the result. The incompatible rule
+therefore stays visible. Capture shortcuts expand into description, amount,
+category, and field values before classification; explicit capture arguments override the
 shortcut. Expense and income interpretation then uses this precedence: an
 explicit category, a capture-shortcut category, the highest-priority matching
 rule, then an account-binding lookup. A shortcut-supplied category is stored as

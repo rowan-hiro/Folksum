@@ -134,8 +134,10 @@ bounds, `amount-per-person` with an explicit participant count, and boolean
 allowed inside a rule. Amount bounds are quoted decimals compared in the
 transaction currency, so a bound with more fractional digits than that currency
 supports never matches it; `explain_bookkeeping_match` reports such a rule as
-`amountUnrepresentable` rather than as a missed amount. Capture shortcuts expand
-into structured capture input:
+`amountUnrepresentable` rather than as a missed amount. That state propagates
+through boolean composition using three-valued logic: `not` preserves it, while
+`all` and `any` propagate it unless another branch definitively determines the
+result. Capture shortcuts expand into structured capture input:
 
 ```text
 category expense.transport.taxi {

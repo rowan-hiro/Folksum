@@ -1755,22 +1755,42 @@ function evaluatePredicate(
 	}
 	if (predicate.not) {
 		const inner = evaluatePredicate(predicate.not, context, path("not"));
+		// Unrepresentable currency bounds are indeterminate: negation must not turn them into matches.
+		if (!inner.ok && inner.reason === "amountUnrepresentable") return inner;
 		return inner.ok
 			? { ok: false, reason: "not", path: path("not") }
 			: { ok: true, path: path("not") };
 	}
 	if (predicate.all) {
+		// Strong three-valued logic lets a definite false dominate an indeterminate comparison.
+		let unrepresentable:
+			| { ok: false; reason: Extract<BookkeepingMatchFailReason, "amountUnrepresentable">; path: string }
+			| undefined;
 		for (const [index, child] of predicate.all.entries()) {
 			const inner = evaluatePredicate(child, context, `${path("all")}[${index}]`);
-			if (!inner.ok) return inner;
+			if (inner.ok) continue;
+			if (inner.reason === "amountUnrepresentable") {
+				unrepresentable ??= { ok: false, reason: "amountUnrepresentable", path: inner.path };
+				continue;
+			}
+			return inner;
 		}
+		if (unrepresentable) return unrepresentable;
 		return { ok: true, path: path("all") };
 	}
 	if (predicate.any) {
+		// A definite true dominates; otherwise preserve the first indeterminate comparison.
+		let unrepresentable:
+			| { ok: false; reason: Extract<BookkeepingMatchFailReason, "amountUnrepresentable">; path: string }
+			| undefined;
 		for (const [index, child] of predicate.any.entries()) {
 			const inner = evaluatePredicate(child, context, `${path("any")}[${index}]`);
 			if (inner.ok) return { ok: true, path: path("any") };
+			if (inner.reason === "amountUnrepresentable") {
+				unrepresentable ??= { ok: false, reason: "amountUnrepresentable", path: inner.path };
+			}
 		}
+		if (unrepresentable) return unrepresentable;
 		return { ok: false, reason: "any", path: path("any") };
 	}
 	throw new TypeError("Validated rule predicate has no supported operator.");

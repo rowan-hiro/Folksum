@@ -31,3 +31,12 @@ Extend the versioned JSON semantic profile IR additively. Rule matches are a cap
 * Existing descriptionContains rules and stored profile hashes remain valid because new collections and optional keys are omitted when unused
 * Agent tools and JSON profile apply can express the overlay backlog primitives before a text DSL compiler exists
 * A later .folksum compiler can target this IR without a second execution engine
+
+## Decision History
+
+<!-- driftseal-reconciliation: 722b0d4a-51f2-4933-a574-30ac02191c47 -->
+### 2026-08-14T07:00:37.464Z — Intent `2026-08-14-011`
+
+Status: Accepted → Accepted
+
+Confirmed the declarative semantic-IR decision while tightening its execution semantics: confirmed captures bind the active profile revision/hash, and currency-unrepresentable amount predicates use fail-closed three-valued composition without changing stored decimal bounds or adding executable behavior.

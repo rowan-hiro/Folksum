@@ -630,6 +630,54 @@ test("bookkeeping classification separates an unrepresentable amount bound from 
 	]);
 });
 
+test("bookkeeping classification propagates unrepresentable bounds through boolean composition", (context) => {
+	const fixture = createFixture();
+	context.after(() => fixture.database.close());
+	fixture.profiles.patchProfile(fixture.scope, {
+		expectedRevision: 0,
+		patch: {
+			categorizationRules: {
+				upsert: [
+					{
+						id: "milli.not",
+						priority: 100,
+						match: { transactionKind: "expense", not: { amount: { gte: "0.001" } } },
+						assign: { categoryId: "expense.other" },
+					},
+					{
+						id: "milli.any",
+						priority: 90,
+						match: {
+							transactionKind: "expense",
+							any: [{ descriptionContains: "never" }, { amount: { gte: "0.001" } }],
+						},
+						assign: { categoryId: "expense.other" },
+					},
+					{
+						id: "fallback",
+						priority: 10,
+						match: { transactionKind: "expense", descriptionContains: "lunch" },
+						assign: { categoryId: "expense.food" },
+					},
+				],
+			},
+		},
+	});
+
+	const explanation = fixture.profiles.explainMatch({
+		householdId: fixture.scope.householdId,
+		transactionKind: "expense",
+		description: "Team lunch",
+		amount: "500.00",
+		currency: "HKD",
+	});
+	assert.equal(explanation.categorizationRuleId, "fallback");
+	assert.deepEqual(explanation.rejected, [
+		{ ruleId: "milli.not", priority: 100, reason: "amountUnrepresentable", path: "not.amount" },
+		{ ruleId: "milli.any", priority: 90, reason: "amountUnrepresentable", path: "any[1].amount" },
+	]);
+});
+
 test("bookkeeping classification expands capture shortcuts and explains higher-priority misses", (context) => {
 	const fixture = createFixture();
 	context.after(() => fixture.database.close());
@@ -734,6 +782,26 @@ test("bookkeeping classification expands capture shortcuts and explains higher-p
 		},
 		fixture.profiles,
 	);
+	const pendingBeforeInvalid = (
+		fixture.database.connection.prepare("SELECT COUNT(*) AS count FROM pending_operations").get() as { count: number }
+	).count;
+	assert.throws(
+		() =>
+			confirming.submit(
+				withScope(fixture.scope, {
+					kind: "record_expense",
+					idempotencyKey: "confirm-missing-shortcut",
+					payload: { shortcutId: "missing", fundingAccountId: cash.id },
+				}),
+				fixture.scope,
+			),
+		/Unknown capture shortcut "missing"/,
+	);
+	const pendingAfterInvalid = (
+		fixture.database.connection.prepare("SELECT COUNT(*) AS count FROM pending_operations").get() as { count: number }
+	).count;
+	assert.equal(pendingAfterInvalid, pendingBeforeInvalid);
+
 	const proposed = confirming.submit(
 		withScope(fixture.scope, {
 			kind: "record_expense",
@@ -749,6 +817,45 @@ test("bookkeeping classification expands capture shortcuts and explains higher-p
 	if (proposed.status !== "confirmation_required") throw new Error("Expected confirmation.");
 	assert.equal(proposed.risk, "medium");
 	assert.equal(proposed.summary, "Record expense of 10.00.");
+	const confirmed = executedTransaction(confirming.confirm(proposed.confirmationToken, fixture.scope));
+	assert.equal(confirmed.transaction.postings.find((posting) => posting.accountId === metro.id)?.amountMinor, 1_000);
+
+	const stale = confirming.submit(
+		withScope(fixture.scope, {
+			kind: "record_expense",
+			idempotencyKey: "confirm-stale-shortcut-mtr",
+			payload: {
+				shortcutId: "mtr",
+				fundingAccountId: cash.id,
+			},
+		}),
+		fixture.scope,
+	);
+	assert.equal(stale.status, "confirmation_required");
+	if (stale.status !== "confirmation_required") throw new Error("Expected confirmation.");
+	assert.equal(stale.summary, "Record expense of 10.00.");
+	fixture.profiles.patchProfile(fixture.scope, {
+		expectedRevision: 1,
+		patch: {
+			captureShortcuts: {
+				upsert: [
+					{
+						id: "mtr",
+						label: "MTR",
+						transactionKind: "expense",
+						description: "MTR",
+						amount: "99.00",
+						categoryId: "expense.transport.metro",
+					},
+				],
+			},
+		},
+	});
+	assert.throws(
+		() => confirming.confirm(stale.confirmationToken, fixture.scope),
+		/Bookkeeping profile changed since confirmation was requested/,
+	);
+	assert.equal(fixture.wealth.findLedgerTransactionByIdempotencyKey("confirm-stale-shortcut-mtr"), undefined);
 
 	const shortcutExplain = fixture.application.submit(
 		withScope(fixture.scope, {

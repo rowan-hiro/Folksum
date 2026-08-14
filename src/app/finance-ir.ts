@@ -16,6 +16,11 @@ import type { BookkeepingProfilePatch, BookkeepingCategoryKind } from "./bookkee
 export type FinanceIrSource = "agent" | "channel" | "scheduler";
 export type FinanceRisk = "none" | "low" | "medium" | "high";
 
+export interface BookkeepingProfileExpectation {
+	revision: number;
+	profileHash: string;
+}
+
 interface FinanceIrBase<TKind extends string, TPayload> {
 	version: 1;
 	kind: TKind;
@@ -38,6 +43,7 @@ export type RecordExpenseIr = MutationFinanceIrBase<
 		categoryId?: string;
 		customFields?: Readonly<Record<string, TransactionCustomFieldValue>>;
 		shortcutId?: string;
+		expectedBookkeepingProfile?: BookkeepingProfileExpectation;
 		description?: string;
 		amount?: string;
 	}
@@ -49,6 +55,7 @@ export type RecordIncomeIr = MutationFinanceIrBase<
 		categoryId?: string;
 		customFields?: Readonly<Record<string, TransactionCustomFieldValue>>;
 		shortcutId?: string;
+		expectedBookkeepingProfile?: BookkeepingProfileExpectation;
 		description?: string;
 		amount?: string;
 	}

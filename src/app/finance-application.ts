@@ -53,14 +53,17 @@ export class FinanceApplication {
 		if (!isFinanceReadIr(ir) && this.policy.requiresConfirmation(ir, risk, scope)) {
 			if (risk === "none") throw new Error(`Invalid confirmation risk ${risk}.`);
 			const confirmationRisk = risk === "high" ? "high" : "medium";
-			const pending = this.confirmations.create(ir, confirmationRisk);
+			const confirmationIr = this.bindConfirmationProfile(ir);
+			const summary = this.summarizeFinanceIr(confirmationIr);
+			this.assertCaptureProfileExpectation(confirmationIr);
+			const pending = this.confirmations.create(confirmationIr, confirmationRisk);
 			return {
 				status: "confirmation_required",
 				risk: confirmationRisk,
-				ir,
+				ir: confirmationIr,
 				pendingOperation: pending.operation,
 				confirmationToken: pending.confirmationToken,
-				summary: this.summarizeFinanceIr(ir),
+				summary,
 			};
 		}
 		return { status: "executed", risk, ir, result: this.execute(ir, scope) };
@@ -160,7 +163,9 @@ export class FinanceApplication {
 	private recordExpense(ir: Extract<FinanceIr, { kind: "record_expense" }>): unknown {
 		const duplicate = this.wealth.findLedgerTransactionByIdempotencyKey(ir.idempotencyKey);
 		if (duplicate) return duplicate;
-		const { categoryId, customFields, expenseAccountId, shortcutId, ...payload } = ir.payload;
+		this.assertCaptureProfileExpectation(ir);
+		const { categoryId, customFields, expenseAccountId, shortcutId, expectedBookkeepingProfile: _, ...payload } =
+			ir.payload;
 		if (!this.profiles) {
 			if (!expenseAccountId) throw new Error("Expense account id is required without a bookkeeping profile service.");
 			if (!payload.description || !payload.amount) {
@@ -211,7 +216,9 @@ export class FinanceApplication {
 	private recordIncome(ir: Extract<FinanceIr, { kind: "record_income" }>): unknown {
 		const duplicate = this.wealth.findLedgerTransactionByIdempotencyKey(ir.idempotencyKey);
 		if (duplicate) return duplicate;
-		const { categoryId, customFields, incomeAccountId, shortcutId, ...payload } = ir.payload;
+		this.assertCaptureProfileExpectation(ir);
+		const { categoryId, customFields, incomeAccountId, shortcutId, expectedBookkeepingProfile: _, ...payload } =
+			ir.payload;
 		if (!this.profiles) {
 			if (!incomeAccountId) throw new Error("Income account id is required without a bookkeeping profile service.");
 			if (!payload.description || !payload.amount) {
@@ -315,6 +322,48 @@ export class FinanceApplication {
 			...(input.categoryId ? { categoryId: input.categoryId } : {}),
 			...(input.customFields ? { customFields: input.customFields } : {}),
 		});
+	}
+
+	private bindConfirmationProfile(ir: FinanceIr): FinanceIr {
+		if (!this.profiles || (ir.kind !== "record_expense" && ir.kind !== "record_income")) return ir;
+		const active = this.profiles.getActiveProfile(ir.householdId);
+		if (ir.kind === "record_expense") {
+			return {
+				...ir,
+				payload: {
+					...ir.payload,
+					expectedBookkeepingProfile: {
+						revision: active.revision,
+						profileHash: active.profileHash,
+					},
+				},
+			};
+		}
+		if (ir.kind === "record_income") {
+			return {
+				...ir,
+				payload: {
+					...ir.payload,
+					expectedBookkeepingProfile: {
+						revision: active.revision,
+						profileHash: active.profileHash,
+					},
+				},
+			};
+		}
+		return ir;
+	}
+
+	private assertCaptureProfileExpectation(ir: FinanceIr): void {
+		if (ir.kind !== "record_expense" && ir.kind !== "record_income") return;
+		const expected = ir.payload.expectedBookkeepingProfile;
+		if (!expected) return;
+		const active = this.requireProfiles().getActiveProfile(ir.householdId);
+		if (active.revision !== expected.revision || active.profileHash !== expected.profileHash) {
+			throw new Error(
+				`Bookkeeping profile changed since confirmation was requested: expected revision ${expected.revision}, active revision is ${active.revision}. Submit the capture again.`,
+			);
+		}
 	}
 
 	private summarizeFinanceIr(ir: FinanceIr): string {
