@@ -172,6 +172,10 @@ folksum profile apply-dsl .data/bookkeeping.folksum
 folksum export <profile-id> <from> <to> [output-path]
 ```
 
+`profile apply-dsl` returns the active revision as `expectedRevision` but never
+rewrites the private `.folksum` source. The user must update its
+`expected-revision` directive explicitly before the next check or apply.
+
 Both profile and data export commands refuse to replace an existing file unless
 the user explicitly supplies `--force`. The model can inspect and propose profile
 patches, preview exports, and explain rule matches, but it cannot write local

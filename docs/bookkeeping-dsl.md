@@ -29,11 +29,31 @@ folksum profile apply-dsl path/to/household.folksum
 
 Both commands default to `.data/bookkeeping.folksum` when the path is omitted.
 `expected-revision` must equal the active revision, so a stale private file cannot
-overwrite a newer file or agent update. After a successful activation, Folksum
-rewrites that directive in place, including a trailing `#` comment on the same
-line. If the file changes between compile and rewrite, activation has already
-committed and the command leaves the file untouched; align `expected-revision`
-with the new active revision and run `apply-dsl` again.
+overwrite a newer file or agent update. After a successful activation, update
+the document to the returned `expectedRevision` before using it again. Folksum
+never rewrites the private DSL source file.
+
+For example, a successful activation writes one JSON object to standard output:
+
+```json
+{
+  "status": "activated",
+  "revision": 1,
+  "profileHash": "...",
+  "expectedRevision": 1
+}
+```
+
+Replace only the directive's numeric value in the private file:
+
+```text
+expected-revision 1
+```
+
+Comments and all other declarations remain under the user's control. Until the
+directive is updated, a later `check-dsl` or `apply-dsl` rejects the file as
+stale. The active SQLite profile revision, not the external file, is the runtime
+source of truth.
 
 ## Document structure
 

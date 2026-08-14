@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -9,7 +9,6 @@ import {
 	BookkeepingFileError,
 	parseBookkeepingProfileFile,
 	readBookkeepingProfileFile,
-	rewriteBookkeepingDslExpectedRevision,
 	serializeBookkeepingProfileFile,
 	writeBookkeepingExportFile,
 	writeBookkeepingProfileFile,
@@ -57,29 +56,6 @@ test("bookkeeping profile files round-trip an expected revision and refuse impli
 	const exportPath = join(directory, "exports", "data.csv");
 	writeBookkeepingExportFile(exportPath, { content: "Amount\n12.30\n" });
 	assert.equal(readFileSync(exportPath, "utf8"), "Amount\n12.30\n");
-});
-
-test("bookkeeping DSL rewrite keeps file mode and refuses a changed source", (context) => {
-	const directory = createDirectory(context);
-	const path = join(directory, "household.folksum");
-	const original = "folksum-bookkeeping 1\nexpected-revision 0 # current revision\nextends folksum/default@1\n";
-	writeFileSync(path, original, { mode: 0o600 });
-	if (process.platform !== "win32") chmodSync(path, 0o600);
-
-	assert.equal(rewriteBookkeepingDslExpectedRevision(path, 1, { expectedText: original }), path);
-	assert.equal(
-		readFileSync(path, "utf8"),
-		"folksum-bookkeeping 1\nexpected-revision 1 # current revision\nextends folksum/default@1\n",
-	);
-	if (process.platform !== "win32") assert.equal(statSync(path).mode & 0o777, 0o600);
-
-	writeFileSync(path, original, { mode: 0o600 });
-	assert.throws(
-		() => rewriteBookkeepingDslExpectedRevision(path, 1, { expectedText: `${original}# extra\n` }),
-		(error: unknown) =>
-			error instanceof BookkeepingFileError && /changed before expected-revision/.test(error.message),
-	);
-	assert.equal(readFileSync(path, "utf8"), original);
 });
 
 test("bookkeeping profile and export CLI commands apply revisioned files and write deterministic output", (context) => {

@@ -15,7 +15,6 @@ import {
 	DEFAULT_BOOKKEEPING_DSL_PATH,
 	readBookkeepingDslFile,
 	readBookkeepingProfileFile,
-	rewriteBookkeepingDslExpectedRevision,
 	serializeBookkeepingProfileFile,
 	writeBookkeepingExportFile,
 	writeBookkeepingProfileFile,
@@ -375,15 +374,11 @@ function runProfileCommand(
 			expectedRevision: compiled.document.expectedRevision,
 			source: "import",
 		});
-		const writtenPath = rewriteBookkeepingDslExpectedRevision(path, result.active.revision, {
-			expectedText: compiled.text,
-		});
 		console.log(
 			JSON.stringify({
 				status: result.duplicate ? "unchanged" : "activated",
 				revision: result.active.revision,
 				profileHash: result.active.profileHash,
-				path: writtenPath,
 				expectedRevision: result.active.revision,
 			}),
 		);

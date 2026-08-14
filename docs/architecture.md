@@ -197,10 +197,12 @@ overlay on the active revision. The parser accepts only allow-listed category,
 field, rule, shortcut, export, and removal declarations, then compiles them into the same
 profile patch model. It performs no includes, interpolation, SQL, templates, or
 code execution. `profile check-dsl` validates without mutation;
-`profile apply-dsl` explicitly activates the compiled full revision and rewrites
-`expected-revision` in the source file when the file still matches the compiled
-text, preserving trailing comments and the original file mode. Household
-values remain in the external DSL file rather than the public repository.
+`profile apply-dsl` explicitly activates the compiled full revision and returns
+the next `expectedRevision` without rewriting the private source file. This is an
+intentional persistence boundary: SQLite activation and an external file edit
+cannot form one atomic transaction, so the CLI never risks overwriting a
+concurrent user or editor change. The user updates the external directive
+explicitly, and household values remain outside the public repository.
 
 Categorization rules keep `transactionKind` and exactly one predicate:
 `descriptionContains`, exact-money `amount` bounds, `amountPerPerson` bounds with

@@ -155,7 +155,11 @@ folksum profile apply-dsl path/to/household.folksum
 
 The DSL carries an optimistic `expected-revision` and compiles through the same
 profile patch validator used by conversational changes. It has no includes,
-interpolation, SQL, templates, or executable code. See
+interpolation, SQL, templates, or executable code. On success, `apply-dsl`
+prints the active revision as `expectedRevision` but never edits the private
+`.folksum` file. Update its `expected-revision` directive explicitly before the
+next validation or activation; leaving the old value in place produces a stale
+revision error. See
 [`docs/bookkeeping-dsl.md`](docs/bookkeeping-dsl.md) for the grammar and the
 public/private customization boundary.
 
