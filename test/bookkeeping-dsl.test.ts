@@ -9,13 +9,14 @@ import {
 	BookkeepingDslError,
 	compileBookkeepingDsl,
 	parseBookkeepingDsl,
+	rewriteExpectedRevision,
 } from "../src/app/bookkeeping-dsl.ts";
 import { getDefaultBookkeepingProfile } from "../src/app/bookkeeping-profile.ts";
 
 const cliPath = resolve(import.meta.dirname, "../src/channels/cli.ts");
 
 const COMPLETE_DSL = `folksum-bookkeeping 1
-expected-revision 0
+expected-revision 0 # current revision
 extends folksum/default@1
 
 # Private deployments can keep household values in this external file.
@@ -157,12 +158,28 @@ test("bookkeeping DSL CLI checks and explicitly applies an external private over
 	assert.equal(applied.status, 0, applied.stderr);
 	assert.equal(JSON.parse(applied.stdout).status, "activated");
 	assert.equal(JSON.parse(applied.stdout).revision, 1);
-	assert.match(readFileSync(dslPath, "utf8"), /^expected-revision 1$/m);
+	assert.match(readFileSync(dslPath, "utf8"), /^expected-revision 1 # current revision$/m);
 
 	writeFileSync(dslPath, COMPLETE_DSL);
 	const stale = runCli(directory, environment, ["profile", "check-dsl", dslPath]);
 	assert.notEqual(stale.status, 0);
 	assert.match(stale.stderr, /revision conflict: expected 0, active revision is 1/);
+});
+
+test("bookkeeping DSL rewrite preserves trailing comments on expected-revision", () => {
+	assert.equal(
+		rewriteExpectedRevision("expected-revision 0 # current revision\n", 1),
+		"expected-revision 1 # current revision\n",
+	);
+	assert.equal(
+		rewriteExpectedRevision("expected-revision 0#current\r\n", 2),
+		"expected-revision 2#current\r\n",
+	);
+	assert.equal(
+		rewriteExpectedRevision("\texpected-revision 3\n", 4),
+		"\texpected-revision 4\n",
+	);
+	assert.throws(() => rewriteExpectedRevision("extends folksum/default@1\n", 1), /could not update expected-revision/);
 });
 
 test("bookkeeping DSL compiles amount predicates, shortcuts, and export primitives", () => {

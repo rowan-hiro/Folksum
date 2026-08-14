@@ -198,7 +198,8 @@ field, rule, shortcut, export, and removal declarations, then compiles them into
 profile patch model. It performs no includes, interpolation, SQL, templates, or
 code execution. `profile check-dsl` validates without mutation;
 `profile apply-dsl` explicitly activates the compiled full revision and rewrites
-`expected-revision` in the source file. Household
+`expected-revision` in the source file when the file still matches the compiled
+text, preserving trailing comments and the original file mode. Household
 values remain in the external DSL file rather than the public repository.
 
 Categorization rules keep `transactionKind` and exactly one predicate:

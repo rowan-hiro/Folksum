@@ -375,7 +375,9 @@ function runProfileCommand(
 			expectedRevision: compiled.document.expectedRevision,
 			source: "import",
 		});
-		const writtenPath = rewriteBookkeepingDslExpectedRevision(path, result.active.revision);
+		const writtenPath = rewriteBookkeepingDslExpectedRevision(path, result.active.revision, {
+			expectedText: compiled.text,
+		});
 		console.log(
 			JSON.stringify({
 				status: result.duplicate ? "unchanged" : "activated",

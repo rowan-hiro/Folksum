@@ -179,11 +179,14 @@ export function rewriteExpectedRevision(text: string, revision: number, source =
 	if (!Number.isSafeInteger(revision) || revision < 0) {
 		throw new BookkeepingDslError(`${source}: revision must be a non-negative integer.`);
 	}
-	const pattern = /^(expected-revision)[ \t]+\d+[ \t]*$/m;
-	if (!pattern.test(text)) {
+	const pattern = /^([ \t]*expected-revision)([ \t]+)(\d+)([ \t]*(?:#.*)?)?(\r?)$/gm;
+	const matches = [...text.matchAll(pattern)];
+	const match = matches[0];
+	if (matches.length !== 1 || match?.index === undefined) {
 		throw new BookkeepingDslError(`${source}: could not update expected-revision.`);
 	}
-	return text.replace(pattern, `expected-revision ${revision}`);
+	const updated = `${match[1]}${match[2]}${revision}${match[4] ?? ""}${match[5] ?? ""}`;
+	return `${text.slice(0, match.index)}${updated}${text.slice(match.index + match[0].length)}`;
 }
 
 function parseDeclaration(

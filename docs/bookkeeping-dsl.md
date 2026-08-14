@@ -29,8 +29,11 @@ folksum profile apply-dsl path/to/household.folksum
 
 Both commands default to `.data/bookkeeping.folksum` when the path is omitted.
 `expected-revision` must equal the active revision, so a stale private file cannot
-overwrite a newer file or agent update. After a successful activation, update the
-document to the returned revision before using it again.
+overwrite a newer file or agent update. After a successful activation, Folksum
+rewrites that directive in place, including a trailing `#` comment on the same
+line. If the file changes between compile and rewrite, activation has already
+committed and the command leaves the file untouched; align `expected-revision`
+with the new active revision and run `apply-dsl` again.
 
 ## Document structure
 

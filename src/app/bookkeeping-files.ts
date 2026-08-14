@@ -5,6 +5,7 @@ import {
 	readFileSync,
 	renameSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -112,7 +113,7 @@ export function readBookkeepingDslFile(
 	baseProfile: BookkeepingProfile,
 	cwd = process.cwd(),
 	activeRevision?: number,
-): { document: BookkeepingDslDocument; profile: BookkeepingProfile } {
+): { document: BookkeepingDslDocument; profile: BookkeepingProfile; text: string } {
 	const resolvedPath = resolve(cwd, path);
 	let text: string;
 	try {
@@ -128,7 +129,8 @@ export function readBookkeepingDslFile(
 				`Bookkeeping DSL revision conflict: expected ${document.expectedRevision}, active revision is ${activeRevision}.`,
 			);
 		}
-		return compileBookkeepingDsl(text, baseProfile, resolvedPath);
+		const compiled = compileBookkeepingDsl(text, baseProfile, resolvedPath);
+		return { ...compiled, text };
 	} catch (error) {
 		if (error instanceof BookkeepingFileError) throw error;
 		const reason = error instanceof Error ? error.message : String(error);
@@ -139,27 +141,41 @@ export function readBookkeepingDslFile(
 export function rewriteBookkeepingDslExpectedRevision(
 	path: string,
 	revision: number,
-	options: { cwd?: string; text?: string } = {},
+	options: { cwd?: string; expectedText: string },
 ): string {
 	const resolvedPath = resolve(options.cwd ?? process.cwd(), path);
-	let text = options.text;
-	if (text === undefined) {
-		try {
-			text = readFileSync(resolvedPath, "utf8");
-		} catch (error) {
-			const reason = error instanceof Error ? error.message : String(error);
-			throw new BookkeepingFileError(`Could not read bookkeeping DSL file ${resolvedPath}: ${reason}`);
-		}
+	let current: string;
+	let mode = 0o600;
+	try {
+		current = readFileSync(resolvedPath, "utf8");
+		mode = statSync(resolvedPath).mode & 0o777;
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : String(error);
+		throw new BookkeepingFileError(
+			`Activated profile revision ${revision}, but could not update expected-revision in ${resolvedPath}: ${reason}`,
+		);
 	}
-	const next = rewriteExpectedRevision(text, revision, resolvedPath);
-	if (next === text) return resolvedPath;
+	if (current !== options.expectedText) {
+		throw new BookkeepingFileError(
+			`Activated profile revision ${revision}, but ${resolvedPath} changed before expected-revision could be updated. Re-run profile apply-dsl after aligning expected-revision with the active revision.`,
+		);
+	}
+	const next = rewriteExpectedRevision(current, revision, resolvedPath);
+	if (next === current) return resolvedPath;
 	const temporaryPath = `${resolvedPath}.${process.pid}.${randomUUID()}.tmp`;
 	try {
-		writeFileSync(temporaryPath, next, { encoding: "utf8", flag: "wx" });
+		writeFileSync(temporaryPath, next, { encoding: "utf8", flag: "wx", mode });
+		const still = readFileSync(resolvedPath, "utf8");
+		if (still !== options.expectedText) {
+			throw new BookkeepingFileError(
+				`Activated profile revision ${revision}, but ${resolvedPath} changed before expected-revision could be updated. Re-run profile apply-dsl after aligning expected-revision with the active revision.`,
+			);
+		}
 		renameSync(temporaryPath, resolvedPath);
 		return resolvedPath;
 	} catch (error) {
 		if (existsSync(temporaryPath)) rmSync(temporaryPath, { force: true });
+		if (error instanceof BookkeepingFileError) throw error;
 		const reason = error instanceof Error ? error.message : String(error);
 		throw new BookkeepingFileError(
 			`Activated profile revision ${revision}, but could not update expected-revision in ${resolvedPath}: ${reason}`,
