@@ -131,7 +131,11 @@ by descending priority, then ID, by the existing profile validator.
 Version 1 match predicates are `description contains`, exact-money `amount`
 bounds, `amountPerPerson` with an explicit participant count, and boolean
 `all` / `any` / `not` composition. Nested `all` / `any` / `not` blocks are
-allowed inside a rule. Capture shortcuts expand into structured capture input:
+allowed inside a rule. Amount bounds are quoted decimals compared in the
+transaction currency, so a bound with more fractional digits than that currency
+supports never matches it; `explain_bookkeeping_match` reports such a rule as
+`amountUnrepresentable` rather than as a missed amount. Capture shortcuts expand
+into structured capture input:
 
 ```text
 shortcut transit.bus {

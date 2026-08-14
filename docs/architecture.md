@@ -209,7 +209,12 @@ Categorization rules keep `transactionKind` and exactly one predicate:
 an explicit participant count, or boolean `all` / `any` / `not` composition.
 Amount bounds are decimal strings and convert with the transaction currency at
 match time; per-person comparisons multiply threshold minor units by the
-participant count rather than dividing the amount. Capture shortcuts expand into
+participant count rather than dividing the amount. A bound the transaction
+currency cannot express, because it carries more fractional digits than the
+currency scale or because the per-person product leaves the safe ledger range,
+never matches; the explanation reports it as `amountUnrepresentable` instead of an
+ordinary amount miss, so a rule that is silently inapplicable to a currency stays
+visible. Capture shortcuts expand into
 description, amount, category, and field values before classification; explicit
 capture arguments override the shortcut. Expense and income interpretation then
 uses this precedence: an explicit category, the highest-priority matching rule,
@@ -220,8 +225,10 @@ the applied profile revision/hash, category id and label, matched rule, custom
 fields, and resolution source atomically with its postings. Idempotent retries
 retain the original snapshot; reversals copy it and identify reversal resolution
 rather than reclassifying against the current profile. `explain_bookkeeping_match`
-is a read of the current profile and never writes explanation text onto ledger
-rows.
+is a read of the current profile: it reports category and rule outcomes without
+requiring an account binding or a complete set of required fields, and never
+writes explanation text onto ledger rows. Capture completeness stays a condition
+of the ledger write.
 
 Export profiles are a non-executable projection DSL. They select transaction or
 posting row mode, CSV or JSON, allow-listed columns, category/account/source

@@ -223,6 +223,86 @@ test("bookkeeping classification requires declared fields before any ledger writ
 	assert.equal(fixture.wealth.listTransactions().length, 0);
 });
 
+test("bookkeeping match explanation reads the profile without demanding a complete capture", (context) => {
+	const fixture = createFixture();
+	context.after(() => fixture.database.close());
+	const cash = fixture.wealth.createAccount({ name: "Cash", type: "asset" });
+	const dining = fixture.wealth.createAccount({ name: "Dining", type: "expense" });
+	fixture.profiles.patchProfile(fixture.scope, {
+		expectedRevision: 0,
+		patch: {
+			categories: {
+				upsert: [
+					{
+						id: "expense.food.dining",
+						label: "Dining",
+						kind: "expense",
+						parentId: "expense.food",
+						accountIds: { HKD: dining.id },
+					},
+				],
+			},
+			customFields: {
+				upsert: [{ id: "project", label: "Project", target: "transaction", type: "text", required: true }],
+			},
+			categorizationRules: {
+				upsert: [
+					{
+						id: "merchant.lunch",
+						priority: 10,
+						match: { transactionKind: "expense", descriptionContains: "lunch" },
+						assign: { categoryId: "expense.food.dining" },
+					},
+				],
+			},
+		},
+	});
+
+	const explainLunch = fixture.application.submit(
+		withScope(fixture.scope, {
+			kind: "explain_bookkeeping_match",
+			payload: { transactionKind: "expense", description: "Team lunch", amount: "38.50", currency: "HKD" },
+		}),
+		fixture.scope,
+	);
+	assert.equal(explainLunch.status, "executed");
+	assert.deepEqual(explainLunch.result, {
+		resolutionSource: "rule",
+		categoryId: "expense.food.dining",
+		categoryLabel: "Dining",
+		categorizationRuleId: "merchant.lunch",
+		winnerPath: "descriptionContains",
+		rejected: [],
+	});
+
+	const explainUnbound = fixture.application.submit(
+		withScope(fixture.scope, {
+			kind: "explain_bookkeeping_match",
+			payload: { transactionKind: "expense", description: "Bus fare", amount: "5.00", currency: "HKD" },
+		}),
+		fixture.scope,
+	);
+	assert.equal(explainUnbound.status, "executed");
+	assert.deepEqual(explainUnbound.result, {
+		resolutionSource: "unclassified",
+		rejected: [{ ruleId: "merchant.lunch", priority: 10, reason: "descriptionContains", path: "descriptionContains" }],
+	});
+
+	assert.throws(
+		() =>
+			fixture.application.submit(
+				withScope(fixture.scope, {
+					kind: "record_expense",
+					idempotencyKey: "explained-lunch",
+					payload: { description: "Team lunch", amount: "38.50", fundingAccountId: cash.id },
+				}),
+				fixture.scope,
+			),
+		/Required transaction custom field "project" is missing/,
+	);
+	assert.equal(fixture.wealth.listTransactions().length, 0);
+});
+
 test("bookkeeping classification keeps the original profile snapshot on idempotent retry and reversal", (context) => {
 	const fixture = createFixture();
 	context.after(() => fixture.database.close());
@@ -480,6 +560,70 @@ test("bookkeeping classification supports amount bounds, per-person thresholds, 
 	);
 	assert.equal(cheapTaxi.transaction.bookkeeping?.resolutionSource, "account_binding");
 	assert.equal(cheapTaxi.transaction.bookkeeping?.categorizationRuleId, undefined);
+});
+
+test("bookkeeping classification separates an unrepresentable amount bound from a real amount miss", (context) => {
+	const fixture = createFixture();
+	context.after(() => fixture.database.close());
+	const dinar = fixture.wealth.createAccount({ name: "Dinar food", type: "expense", currency: "KWD" });
+	fixture.profiles.patchProfile(fixture.scope, {
+		expectedRevision: 0,
+		patch: {
+			categories: {
+				upsert: [{ id: "expense.food", label: "Food", kind: "expense", accountIds: { KWD: dinar.id } }],
+			},
+			categorizationRules: {
+				upsert: [
+					{
+						id: "milli.bound",
+						priority: 90,
+						match: { transactionKind: "expense", amount: { gte: "10.001" } },
+						assign: { categoryId: "expense.food" },
+					},
+					{
+						id: "lunch",
+						priority: 10,
+						match: { transactionKind: "expense", descriptionContains: "lunch" },
+						assign: { categoryId: "expense.food" },
+					},
+				],
+			},
+		},
+	});
+
+	// HKD carries two fractional digits, so the three-digit bound is not a miss: it cannot be compared at all.
+	const hongKong = fixture.profiles.explainMatch({
+		householdId: fixture.scope.householdId,
+		transactionKind: "expense",
+		description: "Team lunch",
+		amount: "500.00",
+		currency: "HKD",
+	});
+	assert.equal(hongKong.categorizationRuleId, "lunch");
+	assert.deepEqual(hongKong.rejected, [
+		{ ruleId: "milli.bound", priority: 90, reason: "amountUnrepresentable", path: "amount" },
+	]);
+
+	const kuwait = fixture.profiles.explainMatch({
+		householdId: fixture.scope.householdId,
+		transactionKind: "expense",
+		description: "Team lunch",
+		amount: "500.000",
+		currency: "KWD",
+	});
+	assert.equal(kuwait.categorizationRuleId, "milli.bound");
+
+	const kuwaitMiss = fixture.profiles.explainMatch({
+		householdId: fixture.scope.householdId,
+		transactionKind: "expense",
+		description: "Team lunch",
+		amount: "1.000",
+		currency: "KWD",
+	});
+	assert.equal(kuwaitMiss.categorizationRuleId, "lunch");
+	assert.deepEqual(kuwaitMiss.rejected, [
+		{ ruleId: "milli.bound", priority: 90, reason: "amount", path: "amount" },
+	]);
 });
 
 test("bookkeeping classification expands capture shortcuts and explains higher-priority misses", (context) => {

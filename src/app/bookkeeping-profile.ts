@@ -30,6 +30,7 @@ export type BookkeepingMatchFailReason =
 	| "descriptionContains"
 	| "amount"
 	| "amountPerPerson"
+	| "amountUnrepresentable"
 	| "all"
 	| "any"
 	| "not";
@@ -266,6 +267,15 @@ interface ProfileRevisionRow {
 	created_at: string;
 }
 
+interface ClassifiedTransaction {
+	active: ActiveBookkeepingProfile;
+	currency: string;
+	category?: BookkeepingCategoryDefinition;
+	matchedRule?: CategorizationRuleDefinition;
+	accountId?: string;
+	explanation: BookkeepingMatchExplanation;
+}
+
 interface BoundAccountRow {
 	id: string;
 	household_id: string;
@@ -495,27 +505,84 @@ export class BookkeepingProfileService {
 	}
 
 	explainMatch(input: ResolveBookkeepingTransactionInput): BookkeepingMatchExplanation {
-		return this.classifyTransaction(input, { requireAccount: false }).explanation;
+		return this.classifyTransaction(input).explanation;
 	}
 
 	resolveTransaction(input: ResolveBookkeepingTransactionInput): ResolvedBookkeepingTransaction {
-		const classified = this.classifyTransaction(input, { requireAccount: true });
-		if (!classified.resolved) {
+		const { active, currency, category, matchedRule, accountId, explanation } = this.classifyTransaction(input);
+		if (!accountId) {
+			const categoryMessage = category
+				? `Category "${category.id}" has no ${currency} account binding.`
+				: "No category matched.";
 			throw new BookkeepingProfileError(
-				"No category matched. Provide a compatible account id or activate a category account binding.",
+				`${categoryMessage} Provide a compatible account id or activate a category account binding.`,
 			);
 		}
-		return classified.resolved;
+		const account = this.database.connection
+			.prepare("SELECT id, household_id, type, currency, closed_at FROM accounts WHERE id = ?")
+			.get(accountId) as unknown as BoundAccountRow | undefined;
+		if (
+			!account ||
+			account.household_id !== input.householdId ||
+			account.closed_at !== null ||
+			account.type !== input.transactionKind ||
+			account.currency !== currency
+		) {
+			throw new BookkeepingProfileError(
+				`Account "${accountId}" must be an open ${input.transactionKind} account in ${currency} for this household.`,
+			);
+		}
+		if (category?.accountIds?.[currency] && category.accountIds[currency] !== accountId) {
+			throw new BookkeepingProfileError(
+				`Category "${category.id}" is bound to a different ${currency} account.`,
+			);
+		}
+
+		const fieldsById = new Map(active.profile.customFields.map((field) => [field.id, field]));
+		const customFields: Record<string, TransactionCustomFieldValue> = {
+			...(matchedRule?.assign.fields ?? {}),
+		};
+		if (input.customFields !== undefined) {
+			const supplied = requireRecord(input.customFields, "Transaction customFields");
+			const normalizedIds = new Set<string>();
+			for (const [rawFieldId, value] of Object.entries(supplied)) {
+				const fieldId = requireIdentifier(rawFieldId, "Transaction custom field id");
+				if (normalizedIds.has(fieldId)) {
+					throw new BookkeepingProfileError(`Duplicate transaction custom field "${fieldId}".`);
+				}
+				normalizedIds.add(fieldId);
+				const field = fieldsById.get(fieldId);
+				if (!field) throw new BookkeepingProfileError(`Unknown transaction custom field "${fieldId}".`);
+				if (!["string", "boolean", "number"].includes(typeof value)) {
+					throw new BookkeepingProfileError(`Transaction custom field "${fieldId}" has an unsupported value.`);
+				}
+				validateCustomFieldValue(field, value as CustomFieldValue, `Transaction custom field "${fieldId}"`);
+				customFields[fieldId] = value as TransactionCustomFieldValue;
+			}
+		}
+		for (const field of active.profile.customFields) {
+			if (field.required && !(field.id in customFields)) {
+				throw new BookkeepingProfileError(`Required transaction custom field "${field.id}" is missing.`);
+			}
+		}
+
+		return {
+			accountId,
+			bookkeeping: {
+				profileRevision: active.revision,
+				profileHash: active.profileHash,
+				...(category ? { categoryId: category.id, categoryLabel: category.label } : {}),
+				...(matchedRule ? { categorizationRuleId: matchedRule.id } : {}),
+				customFields,
+				resolutionSource: explanation.resolutionSource,
+			},
+		};
 	}
 
-	private classifyTransaction(
-		input: ResolveBookkeepingTransactionInput,
-		options: { requireAccount: boolean },
-	): { resolved?: ResolvedBookkeepingTransaction; explanation: BookkeepingMatchExplanation } {
+	private classifyTransaction(input: ResolveBookkeepingTransactionInput): ClassifiedTransaction {
 		const active = this.getActiveProfile(input.householdId);
 		const currency = normalizeCurrency(input.currency);
 		const categoriesById = new Map(active.profile.categories.map((category) => [category.id, category]));
-		const fieldsById = new Map(active.profile.customFields.map((field) => [field.id, field]));
 		const normalizedDescription = input.description.trim().toLocaleLowerCase("en-US");
 		let amountMinor: number;
 		try {
@@ -562,83 +629,19 @@ export class BookkeepingProfileService {
 				: category
 					? "account_binding"
 					: "unclassified";
-		const explanation: BookkeepingMatchExplanation = {
-			resolutionSource,
-			...(category ? { categoryId: category.id, categoryLabel: category.label } : {}),
-			...(matchedRule ? { categorizationRuleId: matchedRule.id } : {}),
-			...(winnerPath ? { winnerPath } : {}),
-			rejected,
-		};
-
-		if (!accountId) {
-			if (!options.requireAccount) return { explanation };
-			const categoryMessage = category
-				? `Category "${category.id}" has no ${currency} account binding.`
-				: "No category matched.";
-			throw new BookkeepingProfileError(
-				`${categoryMessage} Provide a compatible account id or activate a category account binding.`,
-			);
-		}
-		const account = this.database.connection
-			.prepare("SELECT id, household_id, type, currency, closed_at FROM accounts WHERE id = ?")
-			.get(accountId) as unknown as BoundAccountRow | undefined;
-		if (
-			!account ||
-			account.household_id !== input.householdId ||
-			account.closed_at !== null ||
-			account.type !== input.transactionKind ||
-			account.currency !== currency
-		) {
-			throw new BookkeepingProfileError(
-				`Account "${accountId}" must be an open ${input.transactionKind} account in ${currency} for this household.`,
-			);
-		}
-		if (category?.accountIds?.[currency] && category.accountIds[currency] !== accountId) {
-			throw new BookkeepingProfileError(
-				`Category "${category.id}" is bound to a different ${currency} account.`,
-			);
-		}
-
-		const customFields: Record<string, TransactionCustomFieldValue> = {
-			...(matchedRule?.assign.fields ?? {}),
-		};
-		if (input.customFields !== undefined) {
-			const supplied = requireRecord(input.customFields, "Transaction customFields");
-			const normalizedIds = new Set<string>();
-			for (const [rawFieldId, value] of Object.entries(supplied)) {
-				const fieldId = requireIdentifier(rawFieldId, "Transaction custom field id");
-				if (normalizedIds.has(fieldId)) {
-					throw new BookkeepingProfileError(`Duplicate transaction custom field "${fieldId}".`);
-				}
-				normalizedIds.add(fieldId);
-				const field = fieldsById.get(fieldId);
-				if (!field) throw new BookkeepingProfileError(`Unknown transaction custom field "${fieldId}".`);
-				if (!["string", "boolean", "number"].includes(typeof value)) {
-					throw new BookkeepingProfileError(`Transaction custom field "${fieldId}" has an unsupported value.`);
-				}
-				validateCustomFieldValue(field, value as CustomFieldValue, `Transaction custom field "${fieldId}"`);
-				customFields[fieldId] = value as TransactionCustomFieldValue;
-			}
-		}
-		for (const field of active.profile.customFields) {
-			if (field.required && !(field.id in customFields)) {
-				throw new BookkeepingProfileError(`Required transaction custom field "${field.id}" is missing.`);
-			}
-		}
-
 		return {
-			resolved: {
-				accountId,
-				bookkeeping: {
-					profileRevision: active.revision,
-					profileHash: active.profileHash,
-					...(category ? { categoryId: category.id, categoryLabel: category.label } : {}),
-					...(matchedRule ? { categorizationRuleId: matchedRule.id } : {}),
-					customFields,
-					resolutionSource,
-				},
+			active,
+			currency,
+			...(category ? { category } : {}),
+			...(matchedRule ? { matchedRule } : {}),
+			...(accountId ? { accountId } : {}),
+			explanation: {
+				resolutionSource,
+				...(category ? { categoryId: category.id, categoryLabel: category.label } : {}),
+				...(matchedRule ? { categorizationRuleId: matchedRule.id } : {}),
+				...(winnerPath ? { winnerPath } : {}),
+				rejected,
 			},
-			explanation,
 		};
 	}
 
@@ -1515,6 +1518,9 @@ interface RuleMatchContext {
 	currency: string;
 }
 
+/** A bound is unrepresentable when the transaction currency cannot express it, not when the amount misses it. */
+type AmountBoundComparison = "match" | "miss" | "unrepresentable";
+
 function validateRulePredicate(
 	value: unknown,
 	label: string,
@@ -1679,19 +1685,23 @@ function evaluatePredicate(
 			: { ok: false, reason: "descriptionContains", path: path("descriptionContains") };
 	}
 	if (predicate.amount) {
-		return compareBound(context.amountMinor, predicate.amount, context.currency, 1)
-			? { ok: true, path: path("amount") }
-			: { ok: false, reason: "amount", path: path("amount") };
+		return amountOutcome(
+			compareBound(context.amountMinor, predicate.amount, context.currency, 1),
+			"amount",
+			path("amount"),
+		);
 	}
 	if (predicate.amountPerPerson) {
-		return compareBound(
-			context.amountMinor,
-			predicate.amountPerPerson,
-			context.currency,
-			predicate.amountPerPerson.participantCount,
-		)
-			? { ok: true, path: path("amountPerPerson") }
-			: { ok: false, reason: "amountPerPerson", path: path("amountPerPerson") };
+		return amountOutcome(
+			compareBound(
+				context.amountMinor,
+				predicate.amountPerPerson,
+				context.currency,
+				predicate.amountPerPerson.participantCount,
+			),
+			"amountPerPerson",
+			path("amountPerPerson"),
+		);
 	}
 	if (predicate.not) {
 		const inner = evaluatePredicate(predicate.not, context, path("not"));
@@ -1716,7 +1726,21 @@ function evaluatePredicate(
 	return { ok: false, reason: "all", path: prefix || "match" };
 }
 
-function compareBound(amountMinor: number, bound: AmountBound, currency: string, participantCount: number): boolean {
+function amountOutcome(
+	comparison: AmountBoundComparison,
+	reason: Extract<BookkeepingMatchFailReason, "amount" | "amountPerPerson">,
+	path: string,
+): { ok: true; path: string } | { ok: false; reason: BookkeepingMatchFailReason; path: string } {
+	if (comparison === "match") return { ok: true, path };
+	return { ok: false, reason: comparison === "unrepresentable" ? "amountUnrepresentable" : reason, path };
+}
+
+function compareBound(
+	amountMinor: number,
+	bound: AmountBound,
+	currency: string,
+	participantCount: number,
+): AmountBoundComparison {
 	const scaled = (value: string): number | undefined => {
 		try {
 			const thresholdMinor = parseDecimalAmount(value, currency);
@@ -1732,23 +1756,28 @@ function compareBound(amountMinor: number, bound: AmountBound, currency: string,
 	};
 	if (bound.eq !== undefined) {
 		const expected = scaled(bound.eq);
-		return expected !== undefined && amountMinor === expected;
+		if (expected === undefined) return "unrepresentable";
+		return amountMinor === expected ? "match" : "miss";
 	}
 	if (bound.gte !== undefined) {
 		const minimum = scaled(bound.gte);
-		if (minimum === undefined || amountMinor < minimum) return false;
+		if (minimum === undefined) return "unrepresentable";
+		if (amountMinor < minimum) return "miss";
 	}
 	if (bound.gt !== undefined) {
 		const minimum = scaled(bound.gt);
-		if (minimum === undefined || amountMinor <= minimum) return false;
+		if (minimum === undefined) return "unrepresentable";
+		if (amountMinor <= minimum) return "miss";
 	}
 	if (bound.lte !== undefined) {
 		const maximum = scaled(bound.lte);
-		if (maximum === undefined || amountMinor > maximum) return false;
+		if (maximum === undefined) return "unrepresentable";
+		if (amountMinor > maximum) return "miss";
 	}
 	if (bound.lt !== undefined) {
 		const maximum = scaled(bound.lt);
-		if (maximum === undefined || amountMinor >= maximum) return false;
+		if (maximum === undefined) return "unrepresentable";
+		if (amountMinor >= maximum) return "miss";
 	}
-	return true;
+	return "match";
 }
