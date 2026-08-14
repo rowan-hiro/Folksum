@@ -363,6 +363,7 @@ function runProfileCommand(
 					categories: compiled.profile.categories.length,
 					customFields: compiled.profile.customFields.length,
 					categorizationRules: compiled.profile.categorizationRules.length,
+					captureShortcuts: compiled.profile.captureShortcuts?.length ?? 0,
 					exportProfiles: compiled.profile.exportProfiles.length,
 				}),
 			);
@@ -378,6 +379,7 @@ function runProfileCommand(
 				status: result.duplicate ? "unchanged" : "activated",
 				revision: result.active.revision,
 				profileHash: result.active.profileHash,
+				expectedRevision: result.active.revision,
 			}),
 		);
 		return;

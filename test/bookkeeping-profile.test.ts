@@ -339,3 +339,144 @@ test("bookkeeping profile rejects unsafe shape, cycles, invalid assignments, and
 	);
 	assert.throws(() => parseBookkeepingProfileJson("{", "profile.json"), BookkeepingProfileError);
 });
+
+test("bookkeeping profile validates match composition, amount bounds, and capture shortcuts", () => {
+	const profile = getDefaultBookkeepingProfile();
+	assert.throws(
+		() =>
+			applyBookkeepingProfilePatch(profile, {
+				categorizationRules: {
+					upsert: [
+						{
+							id: "empty-all",
+							priority: 1,
+							match: { transactionKind: "expense", all: [] },
+							assign: { categoryId: "expense.food" },
+						},
+					],
+				},
+			}),
+		/all must contain at least one predicate/,
+	);
+	assert.throws(
+		() =>
+			applyBookkeepingProfilePatch(profile, {
+				categorizationRules: {
+					upsert: [
+						{
+							id: "eq-and-range",
+							priority: 1,
+							match: { transactionKind: "expense", amount: { eq: "10.00", gte: "1.00" } },
+							assign: { categoryId: "expense.food" },
+						},
+					],
+				},
+			}),
+		/eq cannot be combined with other bounds/,
+	);
+	assert.throws(
+		() =>
+			applyBookkeepingProfilePatch(profile, {
+				categorizationRules: {
+					upsert: [
+						{
+							id: "nested-kind",
+							priority: 1,
+							match: {
+								transactionKind: "expense",
+								all: [{ transactionKind: "income", descriptionContains: "x" } as never],
+							},
+							assign: { categoryId: "expense.food" },
+						},
+					],
+				},
+			}),
+		/transactionKind is only allowed on the root match/,
+	);
+	const withShortcut = applyBookkeepingProfilePatch(profile, {
+		captureShortcuts: {
+			upsert: [
+				{
+					id: "bus",
+					label: "Bus",
+					transactionKind: "expense",
+					description: "Bus",
+					amount: "5.00",
+					categoryId: "expense.transport",
+				},
+			],
+		},
+	});
+	assert.equal(withShortcut.captureShortcuts?.[0]?.id, "bus");
+	assert.throws(
+		() =>
+			applyBookkeepingProfilePatch(profile, {
+				captureShortcuts: {
+					upsert: [
+						{
+							id: "bad",
+							label: "Bad",
+							transactionKind: "expense",
+							description: "Bad",
+							categoryId: "income.salary",
+						},
+					],
+				},
+			}),
+		/cannot assign an income category to an expense transaction/,
+	);
+	const jpy = validateBookkeepingProfile({
+		...profile,
+		categorizationRules: [
+			{
+				id: "jpy.exact",
+				priority: 1,
+				match: { transactionKind: "expense", amount: { eq: "1000" } },
+				assign: { categoryId: "expense.food" },
+			},
+		],
+	});
+	assert.equal(jpy.categorizationRules[0]?.match.amount?.eq, "1000");
+});
+
+test("bookkeeping classification compares JPY scale-zero amount bounds in minor units", (context) => {
+	const fixture = createFixture();
+	context.after(() => fixture.database.close());
+	const cash = fixture.wealth.createAccount({ name: "Yen cash", type: "asset", currency: "JPY" });
+	const food = fixture.wealth.createAccount({ name: "Yen food", type: "expense", currency: "JPY" });
+	fixture.profiles.patchProfile(fixture.scope, {
+		expectedRevision: 0,
+		patch: {
+			categories: {
+				upsert: [
+					{
+						id: "expense.food",
+						label: "Food",
+						kind: "expense",
+						accountIds: { JPY: food.id },
+					},
+				],
+			},
+			categorizationRules: {
+				upsert: [
+					{
+						id: "jpy.lunch",
+						priority: 1,
+						match: { transactionKind: "expense", amount: { eq: "1000" } },
+						assign: { categoryId: "expense.food" },
+					},
+				],
+			},
+		},
+	});
+	const resolved = fixture.profiles.resolveTransaction({
+		householdId: fixture.scope.householdId,
+		transactionKind: "expense",
+		description: "Lunch",
+		amount: "1000",
+		currency: "JPY",
+		accountId: food.id,
+	});
+	assert.equal(resolved.bookkeeping.categorizationRuleId, "jpy.lunch");
+	assert.equal(cash.currency, "JPY");
+});

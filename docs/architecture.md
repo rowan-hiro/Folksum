@@ -163,7 +163,13 @@ The default policy is:
 | Medium | create an account, register a statement, record a valuation | request confirmation unless a household rule allows it |
 | High | reverse a transaction, allocate a card repayment, any future external side effect | always request explicit confirmation |
 
-Changing these defaults is a typed household rule and remains auditable.
+Changing these defaults is a typed household rule and remains auditable. A rule
+that requires confirmation for a low-risk mutation stores it as a medium-risk
+pending operation. Before storing an expense or income confirmation, the
+application validates its summary and binds the active bookkeeping profile
+revision and hash into the pending IR. Confirmation fails closed if that profile
+snapshot is no longer active, so a changed shortcut or rule cannot alter the
+amount or classification after the user saw the summary.
 
 ### 3.4 Memory and rules
 
@@ -179,10 +185,10 @@ rules.
 Folksum provides a pinned `folksum/default@1` semantic profile. A household may
 activate complete, validated revisions containing category hierarchies,
 currency-specific category-to-account bindings, typed custom fields,
-deterministic description rules, and declarative export profiles. User profiles
-cannot add SQLite columns, redefine account types, introduce Finance IR kinds,
-or weaken exact-money, balance, currency, confirmation, idempotency, or reversal
-rules.
+deterministic categorization rules, channel-neutral capture shortcuts, and
+declarative export profiles. User profiles cannot add SQLite columns, redefine
+account types, introduce Finance IR mutation kinds, or weaken exact-money,
+balance, currency, confirmation, idempotency, or reversal rules.
 
 The active SQLite revision is the runtime source of truth. Revisions contain a
 normalized full profile, SHA-256 hash, author, source, and monotonically
@@ -194,28 +200,62 @@ conversation cannot silently overwrite a newer change.
 
 A private deployment may instead use the public bookkeeping DSL as a compact
 overlay on the active revision. The parser accepts only allow-listed category,
-field, rule, export, and removal declarations, then compiles them into the same
+field, rule, shortcut, export, and removal declarations, then compiles them into the same
 profile patch model. It performs no includes, interpolation, SQL, templates, or
 code execution. `profile check-dsl` validates without mutation;
-`profile apply-dsl` explicitly activates the compiled full revision. Household
-values remain in the external DSL file rather than the public repository.
+`profile apply-dsl` explicitly activates the compiled full revision and returns
+the next `expectedRevision` without rewriting the private source file. This is an
+intentional persistence boundary: SQLite activation and an external file edit
+cannot form one atomic transaction, so the CLI never risks overwriting a
+concurrent user or editor change. The user updates the external directive
+explicitly, and household values remain outside the public repository.
 
-Expense and income interpretation uses this precedence: an explicit category,
-the highest-priority matching categorization rule, then an account-binding
-lookup. Explicit custom-field values override rule assignments. Required fields,
+Categorization rules keep `transactionKind` only on the root match, plus exactly one
+predicate: `descriptionContains`, exact-money `amount` bounds, `amountPerPerson`
+bounds with an explicit participant count, or boolean `all` / `any` / `not`
+composition. Nested predicates cannot restate `transactionKind`; a nested copy is
+rejected rather than ignored. The public text DSL spells the per-person predicate
+`amount-per-person` and compiles it to the camel-cased semantic IR property.
+Match explanations include at most
+100 rejected-rule details plus the total rejected count and a truncation flag.
+Amount bounds are decimal strings and convert with the transaction currency at
+match time; per-person comparisons multiply threshold minor units by the
+participant count rather than dividing the amount. A bound the transaction
+currency cannot express, because it carries more fractional digits than the
+currency scale or because the per-person product leaves the safe ledger range,
+never matches; the explanation reports it as `amountUnrepresentable` instead of
+an ordinary amount miss. Boolean composition uses three-valued logic: `not`
+preserves the indeterminate state, while `all` and `any` propagate it unless a
+different branch definitively determines the result. The incompatible rule
+therefore stays visible. Capture shortcuts expand into description, amount,
+category, and field values before classification; explicit capture arguments override the
+shortcut. Expense and income interpretation then uses this precedence: an
+explicit category, a capture-shortcut category, the highest-priority matching
+rule, then an account-binding lookup. A shortcut-supplied category is stored as
+resolution source `shortcut` with the shortcut id, not as an explicit user
+category. Explicit custom-field values override rule assignments. Required fields,
 field types, category kind, household, currency, and account bindings are
 validated before a ledger write. The transaction stores the applied profile
-revision/hash, category id and label, matched rule, custom fields, and resolution
-source atomically with its postings. Idempotent retries retain the original
-snapshot; reversals copy it and identify reversal resolution rather than
-reclassifying against the current profile.
+revision/hash, category id and label, matched rule, capture shortcut id, custom
+fields, and resolution source atomically with its postings. Idempotent retries
+retain the original snapshot; reversals copy it and identify reversal resolution
+rather than reclassifying against the current profile.
+`explain_bookkeeping_match` is a read of the current profile: it reports category
+and rule outcomes without requiring an account binding or a complete set of
+required fields, and never writes explanation text onto ledger rows. Capture
+completeness stays a condition of the ledger write.
 
 Export profiles are a non-executable projection DSL. They select transaction or
 posting row mode, CSV or JSON, allow-listed columns, category/account/source
 filters, reversal handling, and an explicit debit/credit sign convention.
-Amounts are formatted directly from integer minor units. The model may request a
-bounded read-only preview, while arbitrary-path file writes remain available
-only through an explicit local CLI command.
+Transaction-row amounts may be taken from an allowlisted posting role (`pnl`,
+`funding`, `debit`, or `credit`). A role that matches no posting leaves the cell
+empty; a role that matches more than one posting fails the export rather than
+emitting an empty amount. Columns may use a literal string instead of a
+source, an allowlisted date format, and an optional UTF-8 BOM. Amounts are
+formatted directly from integer minor units. The model may request a bounded
+read-only preview, while arbitrary-path file writes remain available only through
+an explicit local CLI command.
 
 ### 3.6 Pi dependency boundary
 
@@ -307,17 +347,28 @@ messages, tool payloads, provider diagnostics, credentials, or callback tokens.
 They add channel idempotency around the existing Finance IR and ledger
 idempotency boundaries rather than replacing either one.
 
-### 4.5 Planned SQLite ledger integrity boundary (schema version 10)
+### 4.5 Transaction bookkeeping capture provenance (schema version 10)
+
+Schema version 10 extends immutable `transaction_bookkeeping` snapshots so a
+capture shortcut remains distinguishable from an explicit category. The table
+gains a nullable `shortcut_id`, and `resolution_source` accepts `shortcut` in
+addition to `explicit`, `rule`, `account_binding`, `unclassified`, and
+`reversal`. Existing rows migrate with a null shortcut id and their original
+resolution source. Reversals copy the shortcut id and still record reversal
+resolution rather than reclassifying against the current profile.
+
+### 4.6 Planned SQLite ledger integrity boundary (schema version 11)
 
 This section is the target design for the next schema migration, not a description
-of current schema version 9. Version 9 validates transaction balance in `WealthService`
-and relies on the absence of mutation APIs for immutability, while SQLite only
-checks posting amount, foreign-key existence, and account household/currency
-during posting insertion. Schema version 8 added immutable bookkeeping profile
-revisions and transaction classification snapshots, and version 9 adds channel
-update receipts without changing ledger storage. Version 10 moves the
-irreducible ledger invariants into SQLite as a second line of defense against
-application bugs and accidental direct SQL.
+of current schema version 10. Version 10 stores capture-shortcut provenance on
+transaction bookkeeping snapshots. Version 9 validates transaction balance in
+`WealthService` and relies on the absence of mutation APIs for immutability, while
+SQLite only checks posting amount, foreign-key existence, and account
+household/currency during posting insertion. Schema version 8 added immutable
+bookkeeping profile revisions and transaction classification snapshots, and
+version 9 adds channel update receipts without changing ledger storage. Version
+11 moves the irreducible ledger invariants into SQLite as a second line of
+defense against application bugs and accidental direct SQL.
 
 The database boundary will enforce all of the following:
 
@@ -337,9 +388,9 @@ Database validation is authoritative if application validation is bypassed.
 SQLite `SUM` remains an integer operation: integer overflow aborts the write
 instead of falling back to an approximate floating-point total.
 
-#### 4.5.1 Schema shape and write protocol
+#### 4.6.1 Schema shape and write protocol
 
-Version 10 will denormalize `household_id` and `currency` onto `postings` and use
+Version 11 will denormalize `household_id` and `currency` onto `postings` and use
 composite foreign keys to bind those values to both parents:
 
 ```text
@@ -380,14 +431,14 @@ both `transactions` and `postings` immutable. An account trigger freezes
 Existing idempotency-key uniqueness, reversal links, and `ON DELETE RESTRICT`
 relationships remain unchanged.
 
-#### 4.5.2 Migration and failure policy
+#### 4.6.2 Migration and failure policy
 
-The version 9 to 10 migration runs as one transaction and fails closed. Before
+The version 10 to 11 migration runs as one transaction and fails closed. Before
 changing the schema it checks every existing transaction for posting count,
 integer balance, parent existence, household equality, and currency equality.
 Invalid historical data is never repaired, rounded, deleted, or balanced with a
 synthetic posting; the migration reports the violated invariant and leaves the
-database at version 9.
+database at version 10.
 
 The migration rebuilds `postings` to add the deferred composite key and new
 columns, but avoids rebuilding `transactions`, which is already referenced by
@@ -400,10 +451,10 @@ continue to enable `PRAGMA foreign_keys = ON` for its connection.
 
 Automated acceptance tests must prove:
 
-- a valid version 9 file containing ordinary entries, a reversal, and an
+- a valid version 10 file containing ordinary entries, a reversal, and an
   allocated card payment migrates without changing identifiers, balances,
   posting order, or payment links;
-- an unbalanced, underspecified, orphaned, or cross-household/currency version 9
+- an unbalanced, underspecified, orphaned, or cross-household/currency version 10
   database fails migration without changing its schema version or contents;
 - direct SQL cannot commit an orphan, a zero- or one-posting transaction, an
   unbalanced entry, a cross-scope entry, or a posting appended to a published
@@ -518,6 +569,10 @@ prices, and automatic price feeds are later extensions.
 | `record_asset_valuation` | yes | Store a dated total valuation |
 | `get_net_worth` | no | Calculate household net worth per currency |
 | `get_spending_summary` | no | Aggregate expense postings over a date range |
+| `get_bookkeeping_profile` | no | Read the active semantic profile revision |
+| `update_bookkeeping_profile` | yes | Patch categories, fields, rules, shortcuts, or export profiles |
+| `preview_bookkeeping_export` | no | Render a bounded read-only export preview |
+| `explain_bookkeeping_match` | no | Explain which current-profile rule would win |
 | `update_runtime_settings` | yes, non-financial | Persist and apply only provider, model, and thinking level |
 | `request_user_choice` | no, interaction only | Pause a supported channel turn for one bounded finite choice |
 

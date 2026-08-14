@@ -29,8 +29,31 @@ folksum profile apply-dsl path/to/household.folksum
 
 Both commands default to `.data/bookkeeping.folksum` when the path is omitted.
 `expected-revision` must equal the active revision, so a stale private file cannot
-overwrite a newer file or agent update. After a successful activation, update the
-document to the returned revision before using it again.
+overwrite a newer file or agent update. After a successful activation, update
+the document to the returned `expectedRevision` before using it again. Folksum
+never rewrites the private DSL source file.
+
+For example, a successful activation writes one JSON object to standard output:
+
+```json
+{
+  "status": "activated",
+  "revision": 1,
+  "profileHash": "...",
+  "expectedRevision": 1
+}
+```
+
+Replace only the directive's numeric value in the private file:
+
+```text
+expected-revision 1
+```
+
+Comments and all other declarations remain under the user's control. Until the
+directive is updated, a later `check-dsl` or `apply-dsl` rejects the file as
+stale. The active SQLite profile revision, not the external file, is the runtime
+source of truth.
 
 ## Document structure
 
@@ -105,9 +128,41 @@ fields, or both. Field values can be quoted text, `true`, `false`, or a safe
 integer. Date fields use quoted `YYYY-MM-DD` text. Rules are normalized and sorted
 by descending priority, then ID, by the existing profile validator.
 
-Version 1 intentionally exposes only case-insensitive `description contains`
-matching. Amount thresholds, participant inference, shortcuts, and richer boolean
-conditions require future public language additions rather than private code.
+Version 1 match predicates are `description contains`, exact-money `amount`
+bounds, `amount-per-person` with an explicit participant count, and boolean
+`all` / `any` / `not` composition. Nested `all` / `any` / `not` blocks are
+allowed inside a rule. Amount bounds are quoted decimals compared in the
+transaction currency, so a bound with more fractional digits than that currency
+supports never matches it; `explain_bookkeeping_match` reports such a rule as
+`amountUnrepresentable` rather than as a missed amount. That state propagates
+through boolean composition using three-valued logic: `not` preserves it, while
+`all` and `any` propagate it unless another branch definitively determines the
+result. Capture shortcuts expand into structured capture input:
+
+```text
+category expense.transport.taxi {
+  label "Taxi"
+  kind expense
+  parent expense.transport
+}
+
+shortcut transit.bus {
+  label "Bus"
+  kind expense
+  description "巴士"
+  amount "5.00"
+  category expense.transport
+}
+
+rule taxi.shared {
+  priority 250
+  when expense all {
+    description contains "的士"
+    amount-per-person 2 gte "50"
+  }
+  category expense.transport.taxi
+}
+```
 
 ## Declarative exports
 
@@ -119,20 +174,25 @@ export daily.csv {
   reversals exclude
   amount-sign absolute
   delimiter ","
+  utf8-bom true
   category expense.food.coffee
   account "account-id-from-the-local-database"
   source agent
   source manual
-  column "Date" transaction.date
+  column "Date" transaction.date date-format dd/mm/yyyy
   column "Description" transaction.description
   column "Amount" posting.amount
+  column "Kind" literal "expense"
   column "Participant" customFields.participant
 }
 ```
 
 Required directives are `label`, `format`, `rows`, `reversals`, `amount-sign`,
 and at least one `column`. Repeat `category`, `account`, and `source` to build
-filters. CSV delimiters are comma, semicolon, or tab. Column sources use the same
+filters. CSV delimiters are comma, semicolon, or tab. Optional `utf8-bom true`
+prefixes CSV output. Columns may use a source, a `literal` string, an allowlisted
+`date-format`, and `amount-role` (`pnl`, `funding`, `debit`, or `credit`) for
+`transaction.amount` in transaction row mode. Column sources use the same
 allow-list as JSON profile exports; transaction row mode cannot select posting
 columns.
 

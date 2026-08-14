@@ -51,15 +51,19 @@ export class FinanceApplication {
 		this.assertScope(ir, scope);
 		const risk = getFinanceRisk(ir);
 		if (!isFinanceReadIr(ir) && this.policy.requiresConfirmation(ir, risk, scope)) {
-			if (risk !== "medium" && risk !== "high") throw new Error(`Invalid confirmation risk ${risk}.`);
-			const pending = this.confirmations.create(ir, risk);
+			if (risk === "none") throw new Error(`Invalid confirmation risk ${risk}.`);
+			const confirmationRisk = risk === "high" ? "high" : "medium";
+			const confirmationIr = this.bindConfirmationProfile(ir);
+			const summary = this.summarizeFinanceIr(confirmationIr);
+			this.assertCaptureProfileExpectation(confirmationIr);
+			const pending = this.confirmations.create(confirmationIr, confirmationRisk);
 			return {
 				status: "confirmation_required",
-				risk,
-				ir,
+				risk: confirmationRisk,
+				ir: confirmationIr,
 				pendingOperation: pending.operation,
 				confirmationToken: pending.confirmationToken,
-				summary: summarizeFinanceIr(ir),
+				summary,
 			};
 		}
 		return { status: "executed", risk, ir, result: this.execute(ir, scope) };
@@ -117,6 +121,8 @@ export class FinanceApplication {
 					to: ir.payload.to,
 					...(ir.payload.limit === undefined ? {} : { limit: ir.payload.limit }),
 				});
+			case "explain_bookkeeping_match":
+				return this.explainBookkeepingMatch(ir);
 			case "create_account":
 				return this.wealth.createAccount(ir.payload);
 			case "record_expense":
@@ -157,23 +163,52 @@ export class FinanceApplication {
 	private recordExpense(ir: Extract<FinanceIr, { kind: "record_expense" }>): unknown {
 		const duplicate = this.wealth.findLedgerTransactionByIdempotencyKey(ir.idempotencyKey);
 		if (duplicate) return duplicate;
-		const { categoryId, customFields, expenseAccountId, ...payload } = ir.payload;
+		this.assertCaptureProfileExpectation(ir);
+		const { categoryId, customFields, expenseAccountId, shortcutId, expectedBookkeepingProfile: _, ...payload } =
+			ir.payload;
 		if (!this.profiles) {
 			if (!expenseAccountId) throw new Error("Expense account id is required without a bookkeeping profile service.");
-			return this.wealth.recordExpense({ ...payload, expenseAccountId, idempotencyKey: ir.idempotencyKey });
+			if (!payload.description || !payload.amount) {
+				throw new Error("Expense description and amount are required without a bookkeeping profile service.");
+			}
+			return this.wealth.recordExpense({
+				...payload,
+				description: payload.description,
+				amount: payload.amount,
+				expenseAccountId,
+				idempotencyKey: ir.idempotencyKey,
+			});
 		}
 		const funding = this.wealth.getAccount(payload.fundingAccountId);
-		const resolved = this.profiles.resolveTransaction({
+		const capture = this.expandCapture({
 			householdId: ir.householdId,
 			transactionKind: "expense",
-			description: payload.description,
 			currency: funding.currency,
-			...(expenseAccountId ? { accountId: expenseAccountId } : {}),
+			...(shortcutId ? { shortcutId } : {}),
+			...(payload.description ? { description: payload.description } : {}),
+			...(payload.amount ? { amount: payload.amount } : {}),
 			...(categoryId ? { categoryId } : {}),
 			...(customFields ? { customFields } : {}),
 		});
+		const resolved = this.profiles.resolveTransaction({
+			householdId: ir.householdId,
+			transactionKind: "expense",
+			description: capture.description,
+			amount: capture.amount,
+			currency: funding.currency,
+			...(expenseAccountId ? { accountId: expenseAccountId } : {}),
+			...(capture.categoryId ? { categoryId: capture.categoryId } : {}),
+			...(shortcutId ? { shortcutId } : {}),
+			...(capture.customFields ? { customFields: capture.customFields } : {}),
+		});
 		return this.wealth.recordExpense(
-			{ ...payload, expenseAccountId: resolved.accountId, idempotencyKey: ir.idempotencyKey },
+			{
+				...payload,
+				description: capture.description,
+				amount: capture.amount,
+				expenseAccountId: resolved.accountId,
+				idempotencyKey: ir.idempotencyKey,
+			},
 			resolved.bookkeeping,
 		);
 	}
@@ -181,52 +216,204 @@ export class FinanceApplication {
 	private recordIncome(ir: Extract<FinanceIr, { kind: "record_income" }>): unknown {
 		const duplicate = this.wealth.findLedgerTransactionByIdempotencyKey(ir.idempotencyKey);
 		if (duplicate) return duplicate;
-		const { categoryId, customFields, incomeAccountId, ...payload } = ir.payload;
+		this.assertCaptureProfileExpectation(ir);
+		const { categoryId, customFields, incomeAccountId, shortcutId, expectedBookkeepingProfile: _, ...payload } =
+			ir.payload;
 		if (!this.profiles) {
 			if (!incomeAccountId) throw new Error("Income account id is required without a bookkeeping profile service.");
-			return this.wealth.recordIncome({ ...payload, incomeAccountId, idempotencyKey: ir.idempotencyKey });
+			if (!payload.description || !payload.amount) {
+				throw new Error("Income description and amount are required without a bookkeeping profile service.");
+			}
+			return this.wealth.recordIncome({
+				...payload,
+				description: payload.description,
+				amount: payload.amount,
+				incomeAccountId,
+				idempotencyKey: ir.idempotencyKey,
+			});
 		}
 		const destination = this.wealth.getAccount(payload.destinationAccountId);
-		const resolved = this.profiles.resolveTransaction({
+		const capture = this.expandCapture({
 			householdId: ir.householdId,
 			transactionKind: "income",
-			description: payload.description,
 			currency: destination.currency,
-			...(incomeAccountId ? { accountId: incomeAccountId } : {}),
+			...(shortcutId ? { shortcutId } : {}),
+			...(payload.description ? { description: payload.description } : {}),
+			...(payload.amount ? { amount: payload.amount } : {}),
 			...(categoryId ? { categoryId } : {}),
 			...(customFields ? { customFields } : {}),
 		});
+		const resolved = this.profiles.resolveTransaction({
+			householdId: ir.householdId,
+			transactionKind: "income",
+			description: capture.description,
+			amount: capture.amount,
+			currency: destination.currency,
+			...(incomeAccountId ? { accountId: incomeAccountId } : {}),
+			...(capture.categoryId ? { categoryId: capture.categoryId } : {}),
+			...(shortcutId ? { shortcutId } : {}),
+			...(capture.customFields ? { customFields: capture.customFields } : {}),
+		});
 		return this.wealth.recordIncome(
-			{ ...payload, incomeAccountId: resolved.accountId, idempotencyKey: ir.idempotencyKey },
+			{
+				...payload,
+				description: capture.description,
+				amount: capture.amount,
+				incomeAccountId: resolved.accountId,
+				idempotencyKey: ir.idempotencyKey,
+			},
 			resolved.bookkeeping,
 		);
 	}
-}
 
-function summarizeFinanceIr(ir: FinanceIr): string {
-	switch (ir.kind) {
-		case "create_account":
-			return `Create ${ir.payload.type} account "${ir.payload.name}".`;
-		case "record_transfer":
-			return `Record transfer of ${ir.payload.amount}.`;
-		case "record_card_statement":
-			return `Record card statement of ${ir.payload.statementAmount} due ${ir.payload.dueDate}.`;
-		case "register_asset":
-			return `Register ${ir.payload.kind} asset.`;
-		case "record_asset_valuation":
-			return `Record asset valuation of ${ir.payload.amount} on ${ir.payload.valuedAt}.`;
-		case "update_bookkeeping_profile":
-			return `Update bookkeeping profile revision ${ir.payload.expectedRevision}.`;
-		case "reverse_transaction":
-			return `Reverse transaction ${ir.payload.transactionId}.`;
-		case "record_card_payment":
-			return `Record card payment of ${ir.payload.amount}.`;
-		case "record_expense":
-			return `Record expense of ${ir.payload.amount}.`;
-		case "record_income":
-			return `Record income of ${ir.payload.amount}.`;
-		default:
-			return `Execute ${ir.kind}.`;
+	private explainBookkeepingMatch(ir: Extract<FinanceIr, { kind: "explain_bookkeeping_match" }>): unknown {
+		const profiles = this.requireProfiles();
+		const capture = this.expandCapture({
+			householdId: ir.householdId,
+			transactionKind: ir.payload.transactionKind,
+			currency: ir.payload.currency,
+			...(ir.payload.shortcutId ? { shortcutId: ir.payload.shortcutId } : {}),
+			...(ir.payload.description ? { description: ir.payload.description } : {}),
+			...(ir.payload.amount ? { amount: ir.payload.amount } : {}),
+			...(ir.payload.categoryId ? { categoryId: ir.payload.categoryId } : {}),
+			...(ir.payload.customFields ? { customFields: ir.payload.customFields } : {}),
+		});
+		return profiles.explainMatch({
+			householdId: ir.householdId,
+			transactionKind: ir.payload.transactionKind,
+			description: capture.description,
+			amount: capture.amount,
+			currency: ir.payload.currency,
+			...(ir.payload.accountId ? { accountId: ir.payload.accountId } : {}),
+			...(capture.categoryId ? { categoryId: capture.categoryId } : {}),
+			...(ir.payload.shortcutId ? { shortcutId: ir.payload.shortcutId } : {}),
+			...(capture.customFields ? { customFields: capture.customFields } : {}),
+		});
+	}
+
+	private expandCapture(input: {
+		householdId: string;
+		transactionKind: "expense" | "income";
+		currency: string;
+		shortcutId?: string;
+		description?: string;
+		amount?: string;
+		categoryId?: string;
+		customFields?: Readonly<Record<string, string | boolean | number>>;
+	}): { description: string; amount: string; categoryId?: string; customFields?: Readonly<Record<string, string | boolean | number>> } {
+		if (!input.shortcutId) {
+			if (!input.description?.trim() || !input.amount?.trim()) {
+				throw new Error(`${input.transactionKind === "expense" ? "Expense" : "Income"} description and amount are required.`);
+			}
+			return {
+				description: input.description,
+				amount: input.amount,
+				...(input.categoryId ? { categoryId: input.categoryId } : {}),
+				...(input.customFields ? { customFields: input.customFields } : {}),
+			};
+		}
+		return this.requireProfiles().expandCaptureShortcut({
+			householdId: input.householdId,
+			transactionKind: input.transactionKind,
+			shortcutId: input.shortcutId,
+			currency: input.currency,
+			...(input.description ? { description: input.description } : {}),
+			...(input.amount ? { amount: input.amount } : {}),
+			...(input.categoryId ? { categoryId: input.categoryId } : {}),
+			...(input.customFields ? { customFields: input.customFields } : {}),
+		});
+	}
+
+	private bindConfirmationProfile(ir: FinanceIr): FinanceIr {
+		if (!this.profiles || (ir.kind !== "record_expense" && ir.kind !== "record_income")) return ir;
+		const active = this.profiles.getActiveProfile(ir.householdId);
+		if (ir.kind === "record_expense") {
+			return {
+				...ir,
+				payload: {
+					...ir.payload,
+					expectedBookkeepingProfile: {
+						revision: active.revision,
+						profileHash: active.profileHash,
+					},
+				},
+			};
+		}
+		if (ir.kind === "record_income") {
+			return {
+				...ir,
+				payload: {
+					...ir.payload,
+					expectedBookkeepingProfile: {
+						revision: active.revision,
+						profileHash: active.profileHash,
+					},
+				},
+			};
+		}
+		return ir;
+	}
+
+	private assertCaptureProfileExpectation(ir: FinanceIr): void {
+		if (ir.kind !== "record_expense" && ir.kind !== "record_income") return;
+		const expected = ir.payload.expectedBookkeepingProfile;
+		if (!expected) return;
+		const active = this.requireProfiles().getActiveProfile(ir.householdId);
+		if (active.revision !== expected.revision || active.profileHash !== expected.profileHash) {
+			throw new Error(
+				`Bookkeeping profile changed since confirmation was requested: expected revision ${expected.revision}, active revision is ${active.revision}. Submit the capture again.`,
+			);
+		}
+	}
+
+	private summarizeFinanceIr(ir: FinanceIr): string {
+		switch (ir.kind) {
+			case "create_account":
+				return `Create ${ir.payload.type} account "${ir.payload.name}".`;
+			case "record_transfer":
+				return `Record transfer of ${ir.payload.amount}.`;
+			case "record_card_statement":
+				return `Record card statement of ${ir.payload.statementAmount} due ${ir.payload.dueDate}.`;
+			case "register_asset":
+				return `Register ${ir.payload.kind} asset.`;
+			case "record_asset_valuation":
+				return `Record asset valuation of ${ir.payload.amount} on ${ir.payload.valuedAt}.`;
+			case "update_bookkeeping_profile":
+				return `Update bookkeeping profile revision ${ir.payload.expectedRevision}.`;
+			case "reverse_transaction":
+				return `Reverse transaction ${ir.payload.transactionId}.`;
+			case "record_card_payment":
+				return `Record card payment of ${ir.payload.amount}.`;
+			case "record_expense":
+				return `Record expense of ${this.summarizeCaptureAmount(ir)}.`;
+			case "record_income":
+				return `Record income of ${this.summarizeCaptureAmount(ir)}.`;
+			default:
+				return `Execute ${ir.kind}.`;
+		}
+	}
+
+	private summarizeCaptureAmount(
+		ir: Extract<FinanceIr, { kind: "record_expense" | "record_income" }>,
+	): string {
+		if (ir.payload.amount?.trim()) return ir.payload.amount.trim();
+		if (!ir.payload.shortcutId) {
+			throw new Error(
+				`${ir.kind === "record_expense" ? "Expense" : "Income"} description and amount are required.`,
+			);
+		}
+		const accountId =
+			ir.kind === "record_expense" ? ir.payload.fundingAccountId : ir.payload.destinationAccountId;
+		const currency = this.wealth.getAccount(accountId).currency;
+		return this.expandCapture({
+			householdId: ir.householdId,
+			transactionKind: ir.kind === "record_expense" ? "expense" : "income",
+			currency,
+			shortcutId: ir.payload.shortcutId,
+			...(ir.payload.description ? { description: ir.payload.description } : {}),
+			...(ir.payload.categoryId ? { categoryId: ir.payload.categoryId } : {}),
+			...(ir.payload.customFields ? { customFields: ir.payload.customFields } : {}),
+		}).amount;
 	}
 }
 

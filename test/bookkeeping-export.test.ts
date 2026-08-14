@@ -288,3 +288,153 @@ test("bookkeeping export profile validation rejects executable, incompatible, an
 		/references unknown custom field "missing"/,
 	);
 });
+
+test("bookkeeping export projects transaction amounts from posting roles with literals, dates, and UTF-8 BOM", (context) => {
+	const fixture = createFixture();
+	context.after(() => fixture.database.close());
+	recordExpense(fixture, "coffee", "Coffee", "12.30", "alpha");
+	fixture.profiles.patchProfile(fixture.scope, {
+		expectedRevision: 1,
+		patch: {
+			exportProfiles: {
+				upsert: [
+					{
+						id: "icost.csv",
+						label: "iCost CSV",
+						format: "csv",
+						rowMode: "transactions",
+						reversals: "exclude",
+						amountSign: "absolute",
+						utf8Bom: true,
+						columns: [
+							{ header: "Date", source: "transaction.date", dateFormat: "dd/mm/yyyy" },
+							{ header: "Type", literal: "expense" },
+							{ header: "Amount", source: "transaction.amount", amountRole: "pnl" },
+							{ header: "Funding", source: "transaction.amount", amountRole: "funding" },
+						],
+					},
+				],
+			},
+		},
+	});
+	const artifact = fixture.exporter.render({
+		householdId: fixture.scope.householdId,
+		exportProfileId: "icost.csv",
+		from: "2026-08-12",
+		to: "2026-08-12",
+	});
+	assert.equal(artifact.content.startsWith("\uFEFF"), true);
+	assert.match(artifact.content, /12\/08\/2026,expense,12\.30,12\.30/);
+});
+
+test("bookkeeping export fails closed on ambiguous posting roles and preserves prototype headers", (context) => {
+	const fixture = createFixture();
+	context.after(() => fixture.database.close());
+	const posted = recordExpense(fixture, "coffee", "Coffee", "12.30", "alpha");
+	const savings = fixture.wealth.createAccount({ name: "Savings", type: "asset" });
+	fixture.wealth.recordTransfer({
+		description: "Move cash",
+		amount: "5.00",
+		fromAccountId: fixture.cash.id,
+		toAccountId: savings.id,
+		occurredAt: "2026-08-12",
+		idempotencyKey: "move-cash",
+	});
+	fixture.profiles.patchProfile(fixture.scope, {
+		expectedRevision: 1,
+		patch: {
+			exportProfiles: {
+				upsert: [
+					{
+						id: "transfer-pnl.csv",
+						label: "Transfer PnL",
+						format: "csv",
+						rowMode: "transactions",
+						reversals: "exclude",
+						amountSign: "absolute",
+						filters: { accountIds: [savings.id] },
+						columns: [
+							{ header: "Description", source: "transaction.description" },
+							{ header: "PnL", source: "transaction.amount", amountRole: "pnl" },
+						],
+					},
+					{
+						id: "roles.csv",
+						label: "Roles",
+						format: "csv",
+						rowMode: "transactions",
+						reversals: "exclude",
+						amountSign: "absolute",
+						filters: { categoryIds: ["expense.food.dining"] },
+						columns: [
+							{ header: "Description", source: "transaction.description" },
+							{ header: "PnL", source: "transaction.amount", amountRole: "pnl" },
+						],
+					},
+					{
+						id: "proto.json",
+						label: "Prototype header",
+						format: "json",
+						rowMode: "transactions",
+						reversals: "exclude",
+						amountSign: "debit-positive",
+						filters: { categoryIds: ["expense.food.dining"] },
+						columns: [{ header: "__proto__", source: "transaction.description" }],
+					},
+					{
+						id: "proto.csv",
+						label: "Prototype CSV",
+						format: "csv",
+						rowMode: "transactions",
+						reversals: "exclude",
+						amountSign: "debit-positive",
+						filters: { categoryIds: ["expense.food.dining"] },
+						columns: [
+							{ header: "__proto__", source: "transaction.description" },
+							{ header: "Amount", source: "transaction.amount", amountRole: "debit" },
+						],
+					},
+				],
+			},
+		},
+	});
+
+	const transferPnl = fixture.exporter.render({
+		householdId: fixture.scope.householdId,
+		exportProfileId: "transfer-pnl.csv",
+		from: "2026-08-12",
+		to: "2026-08-12",
+	});
+	assert.match(transferPnl.content, /Move cash,$/m);
+
+	const protoJson = fixture.exporter.render({
+		householdId: fixture.scope.householdId,
+		exportProfileId: "proto.json",
+		from: "2026-08-12",
+		to: "2026-08-12",
+	});
+	assert.match(protoJson.content, /"__proto__": "Coffee"/);
+
+	const protoCsv = fixture.exporter.render({
+		householdId: fixture.scope.householdId,
+		exportProfileId: "proto.csv",
+		from: "2026-08-12",
+		to: "2026-08-12",
+	});
+	assert.match(protoCsv.content, /^__proto__,Amount\nCoffee,12\.30\n/);
+	assert.doesNotMatch(protoCsv.content, /\[object Object\]/);
+
+	fixture.database.connection
+		.prepare("INSERT INTO postings (id, transaction_id, account_id, amount_minor, memo) VALUES (?, ?, ?, ?, ?)")
+		.run("extra-pnl", posted.transaction.id, fixture.dining.id, 100, null);
+	assert.throws(
+		() =>
+			fixture.exporter.render({
+				householdId: fixture.scope.householdId,
+				exportProfileId: "roles.csv",
+				from: "2026-08-12",
+				to: "2026-08-12",
+			}),
+		/amount role "pnl" is ambiguous/,
+	);
+});

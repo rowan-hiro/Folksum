@@ -101,9 +101,16 @@ initiate payments.
 
 Folksum ships a pinned `folksum/default@1` semantic bookkeeping profile. A
 household can customize categories, currency-specific account bindings, typed
-transaction fields, deterministic categorization rules, and declarative CSV or
-JSON export profiles. These definitions never alter the physical ledger schema
-or its accounting invariants.
+transaction fields, capture shortcuts, deterministic categorization rules, and
+declarative CSV or JSON export profiles. These definitions never alter the
+physical ledger schema or its accounting invariants.
+
+Rules match on a description substring, exact-money amount bounds, per-person
+thresholds with an explicit participant count, or boolean `all` / `any` / `not`
+composition. Capture shortcuts expand into structured expense or income input
+before classification. Export profiles may take a transaction-row amount from a
+posting role (`pnl`, `funding`, `debit`, or `credit`), emit literal columns,
+format dates from an allowlist, and optionally prefix UTF-8 BOM.
 
 The active profile is an immutable SQLite revision. Export an editable,
 revision-aware JSON document, change it, and apply it through the same validation
@@ -131,8 +138,10 @@ folksum export accountant.csv 2026-01-01 2026-12-31 exports/2026.csv
 ```
 
 The agent can inspect and propose changes to the active profile, subject to
-application-owned confirmation, and can preview bounded exports. It has no tool
-that writes profile or export files.
+application-owned confirmation, preview bounded exports, and explain which
+current-profile rule would win. It has no tool that writes profile or export
+files. Private overlays keep household vocabulary in `.folksum` text; the
+compiler emits the semantic profile IR and does not execute overlay code.
 
 For smaller private overlays, Folksum also provides a non-executable bookkeeping
 DSL. A private file can upsert or remove categories, typed transaction fields,
@@ -146,7 +155,11 @@ folksum profile apply-dsl path/to/household.folksum
 
 The DSL carries an optimistic `expected-revision` and compiles through the same
 profile patch validator used by conversational changes. It has no includes,
-interpolation, SQL, templates, or executable code. See
+interpolation, SQL, templates, or executable code. On success, `apply-dsl`
+prints the active revision as `expectedRevision` but never edits the private
+`.folksum` file. Update its `expected-revision` directive explicitly before the
+next validation or activation; leaving the old value in place produces a stale
+revision error. See
 [`docs/bookkeeping-dsl.md`](docs/bookkeeping-dsl.md) for the grammar and the
 public/private customization boundary.
 

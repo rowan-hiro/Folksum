@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 
 export class WealthDatabase {
 	readonly connection: DatabaseSync;
@@ -572,6 +572,75 @@ export class WealthDatabase {
 					ON channel_update_receipts(channel, status, claimed_at);
 
 				PRAGMA user_version = 9;
+				COMMIT;
+			`);
+			version = 9;
+		}
+
+		if (version < 10) {
+			this.connection.exec(`
+				BEGIN;
+
+				DROP TRIGGER IF EXISTS transaction_bookkeeping_immutable_update;
+				DROP TRIGGER IF EXISTS transaction_bookkeeping_match_profile_revision;
+				DROP TRIGGER IF EXISTS transaction_bookkeeping_immutable_delete;
+
+				CREATE TABLE transaction_bookkeeping_v10 (
+					transaction_id TEXT PRIMARY KEY REFERENCES transactions(id) ON DELETE RESTRICT,
+					profile_revision INTEGER NOT NULL CHECK (profile_revision >= 0),
+					profile_hash TEXT NOT NULL CHECK (length(profile_hash) = 64),
+					category_id TEXT,
+					category_label TEXT,
+					categorization_rule_id TEXT,
+					shortcut_id TEXT,
+					custom_fields_json TEXT NOT NULL CHECK (json_valid(custom_fields_json)),
+					resolution_source TEXT NOT NULL CHECK (
+						resolution_source IN ('explicit', 'shortcut', 'rule', 'account_binding', 'unclassified', 'reversal')
+					),
+					created_at TEXT NOT NULL,
+					CHECK ((category_id IS NULL) = (category_label IS NULL))
+				) STRICT;
+
+				INSERT INTO transaction_bookkeeping_v10 (
+					transaction_id, profile_revision, profile_hash, category_id, category_label,
+					categorization_rule_id, shortcut_id, custom_fields_json, resolution_source, created_at
+				)
+				SELECT
+					transaction_id, profile_revision, profile_hash, category_id, category_label,
+					categorization_rule_id, NULL, custom_fields_json, resolution_source, created_at
+				FROM transaction_bookkeeping;
+
+				DROP TABLE transaction_bookkeeping;
+				ALTER TABLE transaction_bookkeeping_v10 RENAME TO transaction_bookkeeping;
+
+				CREATE TRIGGER transaction_bookkeeping_immutable_update
+					BEFORE UPDATE ON transaction_bookkeeping
+					BEGIN
+						SELECT RAISE(ABORT, 'Transaction bookkeeping metadata is immutable');
+					END;
+
+				CREATE TRIGGER transaction_bookkeeping_match_profile_revision
+					BEFORE INSERT ON transaction_bookkeeping
+					WHEN NEW.profile_revision > 0 AND NOT EXISTS (
+						SELECT 1
+						FROM transactions AS transactions
+						JOIN bookkeeping_profile_revisions AS revisions
+							ON revisions.household_id = transactions.household_id
+							AND revisions.revision = NEW.profile_revision
+							AND revisions.profile_hash = NEW.profile_hash
+						WHERE transactions.id = NEW.transaction_id
+					)
+					BEGIN
+						SELECT RAISE(ABORT, 'Transaction bookkeeping profile revision does not match its household');
+					END;
+
+				CREATE TRIGGER transaction_bookkeeping_immutable_delete
+					BEFORE DELETE ON transaction_bookkeeping
+					BEGIN
+						SELECT RAISE(ABORT, 'Transaction bookkeeping metadata is immutable');
+					END;
+
+				PRAGMA user_version = 10;
 				COMMIT;
 			`);
 		}

@@ -11,10 +11,15 @@ import type {
 	ReverseTransactionInput,
 	TransactionCustomFieldValue,
 } from "../core/types.ts";
-import type { BookkeepingProfilePatch } from "./bookkeeping-profile.ts";
+import type { BookkeepingProfilePatch, BookkeepingCategoryKind } from "./bookkeeping-profile.ts";
 
 export type FinanceIrSource = "agent" | "channel" | "scheduler";
 export type FinanceRisk = "none" | "low" | "medium" | "high";
+
+export interface BookkeepingProfileExpectation {
+	revision: number;
+	profileHash: string;
+}
 
 interface FinanceIrBase<TKind extends string, TPayload> {
 	version: 1;
@@ -33,18 +38,26 @@ interface MutationFinanceIrBase<TKind extends string, TPayload> extends FinanceI
 export type CreateAccountIr = MutationFinanceIrBase<"create_account", CreateAccountInput>;
 export type RecordExpenseIr = MutationFinanceIrBase<
 	"record_expense",
-	Omit<RecordExpenseInput, "idempotencyKey" | "expenseAccountId"> & {
+	Omit<RecordExpenseInput, "idempotencyKey" | "expenseAccountId" | "description" | "amount"> & {
 		expenseAccountId?: string;
 		categoryId?: string;
 		customFields?: Readonly<Record<string, TransactionCustomFieldValue>>;
+		shortcutId?: string;
+		expectedBookkeepingProfile?: BookkeepingProfileExpectation;
+		description?: string;
+		amount?: string;
 	}
 >;
 export type RecordIncomeIr = MutationFinanceIrBase<
 	"record_income",
-	Omit<RecordIncomeInput, "idempotencyKey" | "incomeAccountId"> & {
+	Omit<RecordIncomeInput, "idempotencyKey" | "incomeAccountId" | "description" | "amount"> & {
 		incomeAccountId?: string;
 		categoryId?: string;
 		customFields?: Readonly<Record<string, TransactionCustomFieldValue>>;
+		shortcutId?: string;
+		expectedBookkeepingProfile?: BookkeepingProfileExpectation;
+		description?: string;
+		amount?: string;
 	}
 >;
 export type RecordTransferIr = MutationFinanceIrBase<
@@ -89,6 +102,19 @@ export type PreviewBookkeepingExportIr = FinanceIrBase<
 	"preview_bookkeeping_export",
 	{ exportProfileId: string; from: string; to: string; limit?: number }
 >;
+export type ExplainBookkeepingMatchIr = FinanceIrBase<
+	"explain_bookkeeping_match",
+	{
+		transactionKind: BookkeepingCategoryKind;
+		description?: string;
+		amount?: string;
+		currency: string;
+		accountId?: string;
+		categoryId?: string;
+		customFields?: Readonly<Record<string, TransactionCustomFieldValue>>;
+		shortcutId?: string;
+	}
+>;
 
 export type FinanceReadIr =
 	| ListAccountsIr
@@ -97,7 +123,8 @@ export type FinanceReadIr =
 	| GetNetWorthIr
 	| GetSpendingSummaryIr
 	| GetBookkeepingProfileIr
-	| PreviewBookkeepingExportIr;
+	| PreviewBookkeepingExportIr
+	| ExplainBookkeepingMatchIr;
 
 export type FinanceIr = FinanceMutationIr | FinanceReadIr;
 
@@ -109,6 +136,7 @@ const READ_KINDS = new Set<FinanceIr["kind"]>([
 	"get_spending_summary",
 	"get_bookkeeping_profile",
 	"preview_bookkeeping_export",
+	"explain_bookkeeping_match",
 ]);
 
 export function isFinanceReadIr(ir: FinanceIr): ir is FinanceReadIr {
@@ -124,6 +152,7 @@ export function getFinanceRisk(ir: FinanceIr): FinanceRisk {
 		case "get_spending_summary":
 		case "get_bookkeeping_profile":
 		case "preview_bookkeeping_export":
+		case "explain_bookkeeping_match":
 			return "none";
 		case "record_expense":
 		case "record_income":

@@ -108,7 +108,12 @@ test("migrates v6 statements and allocations to lightweight tracking without rew
 	migratedForCleanup = migrated;
 	assert.equal(
 		(migrated.connection.prepare("PRAGMA user_version").get() as { user_version: number }).user_version,
-		9,
+		10,
+	);
+	assert.ok(
+		(migrated.connection.prepare("PRAGMA table_info(transaction_bookkeeping)").all() as Array<{ name: string }>).some(
+			(column) => column.name === "shortcut_id",
+		),
 	);
 	assert.deepEqual(
 		migrated.connection

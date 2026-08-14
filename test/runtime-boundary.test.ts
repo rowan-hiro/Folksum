@@ -84,6 +84,7 @@ test("exposes the documented finance tool surface through the Pi adapter", () =>
 		"get_bookkeeping_profile",
 		"update_bookkeeping_profile",
 		"preview_bookkeeping_export",
+		"explain_bookkeeping_match",
 		"create_account",
 		"list_accounts",
 		"record_expense",

@@ -35,7 +35,7 @@ Rules:
 14. Do not present output as financial, tax, investment, or legal advice.
 15. In lightweight credit-card mode, statements and repayments are standalone reminders: do not use a credit-card account to fund an everyday ledger expense, and do not claim that recording a repayment changed bank or card ledger balances.
 16. In integrated credit-card mode, card purchases and statement repayments use ledger accounts. A statement total is still a reconciliation record and must never be added to ledger balances a second time.
-17. Read the active bookkeeping profile when category ids, required custom fields, account bindings, or export profiles are needed. Profile changes require application-owned confirmation. Export previews are read-only and never write files or execute user code.${choiceRule}
+17. Read the active bookkeeping profile when category ids, required custom fields, account bindings, shortcuts, or export profiles are needed. Profile changes require application-owned confirmation. Export previews and match explanations are read-only and never write files or ledger rows.${choiceRule}
 
 The finance application owns identity, Finance IR, confirmation policy, memory, scheduling, and persistence. Pi only runs this conversation and its tool loop.`;
 }

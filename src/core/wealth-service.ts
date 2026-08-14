@@ -160,10 +160,20 @@ interface TransactionBookkeepingRow {
 	category_id: string | null;
 	category_label: string | null;
 	categorization_rule_id: string | null;
+	shortcut_id: string | null;
 	custom_fields_json: string;
 	resolution_source: TransactionBookkeepingMetadata["resolutionSource"];
 	created_at: string;
 }
+
+const BOOKKEEPING_RESOLUTION_SOURCES = new Set<TransactionBookkeepingMetadata["resolutionSource"]>([
+	"explicit",
+	"shortcut",
+	"rule",
+	"account_binding",
+	"unclassified",
+	"reversal",
+]);
 
 const ACCOUNT_TYPES = new Set<AccountType>(["asset", "liability", "income", "expense", "equity"]);
 const ASSET_KINDS = new Set<AssetKind>(["property", "investment", "vehicle", "collectible", "business", "other"]);
@@ -458,6 +468,7 @@ export class WealthService {
 								...(original.bookkeeping.categorizationRuleId
 									? { categorizationRuleId: original.bookkeeping.categorizationRuleId }
 									: {}),
+								...(original.bookkeeping.shortcutId ? { shortcutId: original.bookkeeping.shortcutId } : {}),
 								customFields: original.bookkeeping.customFields,
 								resolutionSource: "reversal",
 							},
@@ -1089,8 +1100,8 @@ export class WealthService {
 				.prepare(
 					`INSERT INTO transaction_bookkeeping
 						(transaction_id, profile_revision, profile_hash, category_id, category_label,
-						 categorization_rule_id, custom_fields_json, resolution_source, created_at)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+						 categorization_rule_id, shortcut_id, custom_fields_json, resolution_source, created_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				)
 				.run(
 					transactionId,
@@ -1099,6 +1110,7 @@ export class WealthService {
 					bookkeeping.categoryId ?? null,
 					bookkeeping.categoryLabel ?? null,
 					bookkeeping.categorizationRuleId ?? null,
+					bookkeeping.shortcutId ?? null,
 					JSON.stringify(bookkeeping.customFields),
 					bookkeeping.resolutionSource,
 					createdAt,
@@ -1347,11 +1359,7 @@ function normalizeTransactionBookkeeping(
 			"Bookkeeping category id and label must either both be present or both be absent.",
 		);
 	}
-	if (
-		!["explicit", "rule", "account_binding", "unclassified", "reversal"].includes(
-			input.resolutionSource,
-		)
-	) {
+	if (!BOOKKEEPING_RESOLUTION_SOURCES.has(input.resolutionSource)) {
 		throw new WealthError("invalid_transaction", "Unsupported bookkeeping resolution source.");
 	}
 	const customFields: Record<string, TransactionCustomFieldValue> = {};
@@ -1378,11 +1386,13 @@ function normalizeTransactionBookkeeping(
 		customFields[key] = value;
 	}
 	const categorizationRuleId = cleanOptionalText(input.categorizationRuleId);
+	const shortcutId = cleanOptionalText(input.shortcutId);
 	return {
 		profileRevision: input.profileRevision,
 		profileHash,
 		...(categoryId && categoryLabel ? { categoryId, categoryLabel } : {}),
 		...(categorizationRuleId ? { categorizationRuleId } : {}),
+		...(shortcutId ? { shortcutId } : {}),
 		customFields,
 		resolutionSource: input.resolutionSource,
 	};
@@ -1400,6 +1410,7 @@ function mapTransactionBookkeeping(row: TransactionBookkeepingRow): TransactionB
 			? { categoryId: row.category_id, categoryLabel: row.category_label }
 			: {}),
 		...(row.categorization_rule_id ? { categorizationRuleId: row.categorization_rule_id } : {}),
+		...(row.shortcut_id ? { shortcutId: row.shortcut_id } : {}),
 		customFields: parsed as Record<string, TransactionCustomFieldValue>,
 		resolutionSource: row.resolution_source,
 	});

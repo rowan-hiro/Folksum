@@ -1,13 +1,18 @@
 import {
 	applyBookkeepingProfilePatch,
 	BookkeepingProfileError,
+	type AmountBound,
 	type BookkeepingCategoryDefinition,
+	type BookkeepingExportColumnDefinition,
+	type BookkeepingExportColumnSource,
 	type BookkeepingExportProfileDefinition,
 	type BookkeepingProfile,
 	type BookkeepingProfilePatch,
+	type CaptureShortcutDefinition,
 	type CategorizationRuleDefinition,
 	type CustomFieldDefinition,
 	type CustomFieldValue,
+	type RulePredicate,
 } from "./bookkeeping-profile.ts";
 
 export const BOOKKEEPING_DSL_FORMAT_VERSION = 1 as const;
@@ -29,14 +34,17 @@ interface SourceLine {
 	tokens: Token[];
 }
 
-type DeclarationKind = "category" | "field" | "rule" | "export";
+type DeclarationKind = "category" | "field" | "rule" | "shortcut" | "export";
 
 const COLLECTION_NAMES = {
 	category: "categories",
 	field: "customFields",
 	rule: "categorizationRules",
+	shortcut: "captureShortcuts",
 	export: "exportProfiles",
 } as const;
+
+const AMOUNT_BOUND_KEYS = ["eq", "gte", "gt", "lte", "lt"] as const;
 
 export class BookkeepingDslError extends Error {
 	readonly line: number | undefined;
@@ -64,18 +72,19 @@ export function parseBookkeepingDsl(text: string, source = "bookkeeping DSL"): B
 		category: [],
 		field: [],
 		rule: [],
+		shortcut: [],
 		export: [],
 	};
 	const removals: Record<DeclarationKind, string[]> = {
 		category: [],
 		field: [],
 		rule: [],
+		shortcut: [],
 		export: [],
 	};
 
 	for (let index = 0; index < lines.length; index += 1) {
-		const line = lines[index];
-		if (!line) continue;
+		const line = lines[index]!;
 		const [command, ...rest] = line.tokens;
 		if (!command) continue;
 		if (command.value === "expected-revision") {
@@ -103,16 +112,15 @@ export function parseBookkeepingDsl(text: string, source = "bookkeeping DSL"): B
 			const id = requireBare(rest[0], line, `${command.value} id`);
 			const block: SourceLine[] = [];
 			let closed = false;
+			let depth = 1;
 			for (index += 1; index < lines.length; index += 1) {
-				const blockLine = lines[index];
-				if (!blockLine) continue;
-				if (tokensEqual(blockLine.tokens, ["}"])) {
+				const blockLine = lines[index]!;
+				if (depth === 1 && tokensEqual(blockLine.tokens, ["}"])) {
 					closed = true;
 					break;
 				}
-				if (blockLine.tokens.some((token) => token.value === "{" || token.value === "}")) {
-					fail("Nested blocks and trailing block tokens are not supported.", blockLine);
-				}
+				depth += braceNet(blockLine);
+				if (depth < 1) fail("Unbalanced block braces.", blockLine);
 				block.push(blockLine);
 			}
 			if (!closed) fail(`Unclosed ${command.value} block.`, line);
@@ -178,6 +186,8 @@ function parseDeclaration(
 			return parseField(id, lines, openingLine);
 		case "rule":
 			return parseRule(id, lines, openingLine);
+		case "shortcut":
+			return parseShortcut(id, lines, openingLine);
 		case "export":
 			return parseExport(id, lines, openingLine);
 	}
@@ -265,23 +275,21 @@ function parseField(id: string, lines: SourceLine[], openingLine: SourceLine): C
 function parseRule(id: string, lines: SourceLine[], openingLine: SourceLine): CategorizationRuleDefinition {
 	let priority: number | undefined;
 	let transactionKind: "expense" | "income" | undefined;
-	let descriptionContains: string | undefined;
+	let predicate: RulePredicate | undefined;
 	let categoryId: string | undefined;
 	const fields: Record<string, CustomFieldValue> = {};
-	for (const line of lines) {
+	for (let index = 0; index < lines.length; index += 1) {
+		const line = lines[index]!;
 		const [directive, ...args] = line.tokens;
 		switch (directive?.value) {
 			case "priority":
 				priority = unique(priority, parseNonNegativeInteger(singleToken(args, line, "priority"), line), line, "priority");
 				break;
 			case "when": {
-				if (args.length !== 4 || args[1]?.value !== "description" || args[2]?.value !== "contains") {
-					fail('when syntax is: when <expense|income> description contains "text".', line);
-				}
-				const value = requireBare(args[0], line, "Transaction kind");
-				if (value !== "expense" && value !== "income") fail('when kind must be "expense" or "income".', line);
-				transactionKind = unique(transactionKind, value, line, "when");
-				descriptionContains = requireQuoted(args[3], line, "Description match");
+				const parsed = parseWhen(lines, index);
+				transactionKind = unique(transactionKind, parsed.transactionKind, line, "when");
+				predicate = unique(predicate, parsed.predicate, line, "when");
+				index += parsed.consumed - 1;
 				break;
 			}
 			case "category":
@@ -306,12 +314,67 @@ function parseRule(id: string, lines: SourceLine[], openingLine: SourceLine): Ca
 		priority: required(priority, "priority", openingLine),
 		match: {
 			transactionKind: required(transactionKind, "when", openingLine),
-			descriptionContains: required(descriptionContains, "when", openingLine),
+			...required(predicate, "when", openingLine),
 		},
 		assign: {
 			...(categoryId ? { categoryId } : {}),
 			...(Object.keys(fields).length > 0 ? { fields } : {}),
 		},
+	};
+}
+
+function parseShortcut(id: string, lines: SourceLine[], openingLine: SourceLine): CaptureShortcutDefinition {
+	let label: string | undefined;
+	let transactionKind: "expense" | "income" | undefined;
+	let description: string | undefined;
+	let amount: string | undefined;
+	let categoryId: string | undefined;
+	const customFields: Record<string, CustomFieldValue> = {};
+	for (const line of lines) {
+		const [directive, ...args] = line.tokens;
+		switch (directive?.value) {
+			case "label":
+				label = unique(label, requireQuoted(singleToken(args, line, "label"), line, "Shortcut label"), line, "label");
+				break;
+			case "kind": {
+				const value = requireBare(singleToken(args, line, "kind"), line, "Shortcut kind");
+				if (value !== "expense" && value !== "income") fail('kind must be "expense" or "income".', line);
+				transactionKind = unique(transactionKind, value, line, "kind");
+				break;
+			}
+			case "description":
+				description = unique(
+					description,
+					requireQuoted(singleToken(args, line, "description"), line, "Shortcut description"),
+					line,
+					"description",
+				);
+				break;
+			case "amount":
+				amount = unique(amount, requireQuoted(singleToken(args, line, "amount"), line, "Shortcut amount"), line, "amount");
+				break;
+			case "category":
+				categoryId = unique(categoryId, requireBare(singleToken(args, line, "category"), line, "Category id"), line, "category");
+				break;
+			case "field": {
+				if (args.length !== 2) fail("field requires an id and scalar value.", line);
+				const fieldId = requireBare(args[0], line, "Field id");
+				if (fieldId in customFields) fail(`field ${fieldId} is duplicated.`, line);
+				customFields[fieldId] = parseScalar(args[1], line);
+				break;
+			}
+			default:
+				unknownDirective("shortcut", directive, line);
+		}
+	}
+	return {
+		id,
+		label: required(label, "label", openingLine),
+		transactionKind: required(transactionKind, "kind", openingLine),
+		description: required(description, "description", openingLine),
+		...(amount ? { amount } : {}),
+		...(categoryId ? { categoryId } : {}),
+		...(Object.keys(customFields).length > 0 ? { customFields } : {}),
 	};
 }
 
@@ -322,10 +385,11 @@ function parseExport(id: string, lines: SourceLine[], openingLine: SourceLine): 
 	let reversals: "include" | "exclude" | "only" | undefined;
 	let amountSign: "debit-positive" | "credit-positive" | "absolute" | undefined;
 	let delimiter: "," | ";" | "\t" | undefined;
+	let utf8Bom: boolean | undefined;
 	const categoryIds: string[] = [];
 	const accountIds: string[] = [];
 	const transactionSources: Array<"agent" | "manual" | "import" | "system"> = [];
-	const columns: Array<{ header: string; source: BookkeepingExportProfileDefinition["columns"][number]["source"] }> = [];
+	const columns: BookkeepingExportColumnDefinition[] = [];
 	for (const line of lines) {
 		const [directive, ...args] = line.tokens;
 		switch (directive?.value) {
@@ -374,12 +438,11 @@ function parseExport(id: string, lines: SourceLine[], openingLine: SourceLine): 
 				transactionSources.push(value);
 				break;
 			}
+			case "utf8-bom":
+				utf8Bom = unique(utf8Bom, parseBoolean(singleToken(args, line, "utf8-bom"), line), line, "utf8-bom");
+				break;
 			case "column":
-				if (args.length !== 2) fail("column requires a quoted header and source.", line);
-				columns.push({
-					header: requireQuoted(args[0], line, "Column header"),
-					source: requireBare(args[1], line, "Column source") as BookkeepingExportProfileDefinition["columns"][number]["source"],
-				});
+				columns.push(parseExportColumn(args, line));
 				break;
 			default:
 				unknownDirective("export", directive, line);
@@ -393,6 +456,7 @@ function parseExport(id: string, lines: SourceLine[], openingLine: SourceLine): 
 		reversals: required(reversals, "reversals", openingLine),
 		amountSign: required(amountSign, "amount-sign", openingLine),
 		...(delimiter !== undefined ? { delimiter } : {}),
+		...(utf8Bom ? { utf8Bom: true } : {}),
 		...(
 			categoryIds.length > 0 || accountIds.length > 0 || transactionSources.length > 0
 				? {
@@ -405,6 +469,133 @@ function parseExport(id: string, lines: SourceLine[], openingLine: SourceLine): 
 				: {}
 		),
 		columns,
+	};
+}
+
+function parseWhen(
+	lines: SourceLine[],
+	index: number,
+): { transactionKind: "expense" | "income"; predicate: RulePredicate; consumed: number } {
+	const line = lines[index];
+	if (!line) fail("Missing when clause.", lines[0] ?? { number: 1, tokens: [] });
+	const args = line.tokens.slice(1);
+	if (args.length < 2) fail('when syntax is: when <expense|income> <predicate>.', line);
+	const value = requireBare(args[0], line, "Transaction kind");
+	if (value !== "expense" && value !== "income") fail('when kind must be "expense" or "income".', line);
+	const parsed = parsePredicate(args.slice(1), lines, index);
+	return { transactionKind: value, predicate: parsed.predicate, consumed: parsed.consumed };
+}
+
+function parsePredicate(
+	tokens: Token[],
+	lines: SourceLine[],
+	index: number,
+): { predicate: RulePredicate; consumed: number } {
+	const line = lines[index];
+	if (!line) fail("Missing match predicate.", lines[0] ?? { number: 1, tokens: [] });
+	const head = tokens[0];
+	if (!head || head.quoted) fail("unexpected match predicate.", line);
+	if (head.value === "description") {
+		if (tokens.length !== 3 || tokens[1]?.value !== "contains") {
+			fail('when syntax is: when <expense|income> description contains "text".', line);
+		}
+		return { predicate: { descriptionContains: requireQuoted(tokens[2], line, "Description match") }, consumed: 1 };
+	}
+	if (head.value === "amount-per-person") {
+		const participantCount = parseNonNegativeInteger(tokens[1], line);
+		if (participantCount < 1) fail("amount-per-person participant count must be >= 1.", line);
+		return {
+			predicate: { amountPerPerson: { participantCount, ...parseAmountBound(tokens.slice(2), line) } },
+			consumed: 1,
+		};
+	}
+	if (head.value === "amount") {
+		return { predicate: { amount: parseAmountBound(tokens.slice(1), line) }, consumed: 1 };
+	}
+	if (head.value === "not" && tokens[1]?.value !== "{") {
+		const inner = parsePredicate(tokens.slice(1), lines, index);
+		return { predicate: { not: inner.predicate }, consumed: inner.consumed };
+	}
+	if (head.value === "all" || head.value === "any" || head.value === "not") {
+		if (tokens.length !== 2 || tokens[1]?.value !== "{") fail(`${head.value} requires a block.`, line);
+		const children: RulePredicate[] = [];
+		let consumed = 1;
+		let cursor = index + 1;
+		while (cursor < lines.length) {
+			const innerLine = lines[cursor]!;
+			if (tokensEqual(innerLine.tokens, ["}"])) {
+				consumed += 1;
+				if (head.value === "not") {
+					if (children.length !== 1) fail("not must contain exactly one predicate.", line);
+					return { predicate: { not: children[0] as RulePredicate }, consumed };
+				}
+				if (children.length === 0) fail(`${head.value} must contain at least one predicate.`, line);
+				return { predicate: head.value === "all" ? { all: children } : { any: children }, consumed };
+			}
+			if (head.value === "not" && children.length > 0) fail("not must contain exactly one predicate.", innerLine);
+			const inner = parsePredicate(innerLine.tokens, lines, cursor);
+			children.push(inner.predicate);
+			consumed += inner.consumed;
+			cursor += inner.consumed;
+		}
+		fail(`Unclosed ${head.value} block.`, line);
+	}
+	fail(`unexpected match predicate "${head.value}".`, line);
+}
+
+function parseAmountBound(tokens: Token[], line: SourceLine): AmountBound {
+	const bound: AmountBound = {};
+	if (tokens.length === 0 || tokens.length % 2 !== 0) {
+		fail("amount bound must contain pairs of eq|gte|gt|lte|lt and a quoted decimal.", line);
+	}
+	for (let index = 0; index < tokens.length; index += 2) {
+		const key = requireBare(tokens[index], line, "Amount bound");
+		if (!(AMOUNT_BOUND_KEYS as readonly string[]).includes(key)) {
+			fail(`unknown amount bound "${key}".`, line);
+		}
+		if (bound[key as keyof AmountBound] !== undefined) fail(`duplicate amount bound "${key}".`, line);
+		bound[key as keyof AmountBound] = requireQuoted(tokens[index + 1], line, "Amount");
+	}
+	return bound;
+}
+
+function parseExportColumn(args: Token[], line: SourceLine): BookkeepingExportColumnDefinition {
+	if (args.length < 2) fail("column requires a quoted header and source or literal.", line);
+	const header = requireQuoted(args[0], line, "Column header");
+	if (args[1]?.value === "literal") {
+		if (args.length !== 3) fail('literal column syntax is: column "Header" literal "value".', line);
+		return { header, literal: requireQuoted(args[2], line, "Column literal") };
+	}
+	const source = requireBare(args[1], line, "Column source") as BookkeepingExportColumnSource;
+	let amountRole: BookkeepingExportColumnDefinition["amountRole"];
+	let dateFormat: BookkeepingExportColumnDefinition["dateFormat"];
+	for (let index = 2; index < args.length; index += 2) {
+		const extra = requireBare(args[index], line, "Column option");
+		if (extra === "amount-role") {
+			const role = requireBare(args[index + 1], line, "Amount role");
+			if (role !== "pnl" && role !== "funding" && role !== "debit" && role !== "credit") {
+				fail('amount-role must be pnl, funding, debit, or credit.', line);
+			}
+			if (amountRole !== undefined) fail("amount-role may appear only once.", line);
+			amountRole = role;
+			continue;
+		}
+		if (extra === "date-format") {
+			const format = requireBare(args[index + 1], line, "Date format");
+			if (format !== "yyyy-mm-dd" && format !== "yyyy/mm/dd" && format !== "dd/mm/yyyy") {
+				fail("date-format must be yyyy-mm-dd, yyyy/mm/dd, or dd/mm/yyyy.", line);
+			}
+			if (dateFormat !== undefined) fail("date-format may appear only once.", line);
+			if (format !== "yyyy-mm-dd") dateFormat = format;
+			continue;
+		}
+		fail(`unknown column option "${extra}".`, line);
+	}
+	return {
+		header,
+		source,
+		...(amountRole ? { amountRole } : {}),
+		...(dateFormat ? { dateFormat } : {}),
 	};
 }
 
@@ -436,7 +627,6 @@ function tokenizeLine(line: string, lineNumber: number): Token[] {
 				const character = line[index];
 				if (character === '"' && !escaped) break;
 				escaped = character === "\\" && !escaped;
-				if (character !== "\\") escaped = false;
 				index += 1;
 			}
 			if (index >= line.length) throw new BookkeepingDslError("Unterminated quoted string.", lineNumber);
@@ -490,7 +680,7 @@ function parseDeclarationKind(token: Token | undefined, line: SourceLine): Decla
 }
 
 function isDeclarationKind(value: string): value is DeclarationKind {
-	return value === "category" || value === "field" || value === "rule" || value === "export";
+	return value === "category" || value === "field" || value === "rule" || value === "shortcut" || value === "export";
 }
 
 function singleToken(tokens: Token[], line: SourceLine, directive: string): Token {
@@ -527,6 +717,16 @@ function tokensEqual(tokens: Token[], values: string[]): boolean {
 		tokens.length === values.length &&
 		tokens.every((token, index) => !token.quoted && token.value === values[index])
 	);
+}
+
+function braceNet(line: SourceLine): number {
+	let net = 0;
+	for (const token of line.tokens) {
+		if (token.quoted) continue;
+		if (token.value === "{") net += 1;
+		if (token.value === "}") net -= 1;
+	}
+	return net;
 }
 
 function fail(message: string, line: SourceLine): never {

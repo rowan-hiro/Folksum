@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 
 import { WealthDatabase } from "../core/database.ts";
-import { normalizeCurrency } from "../core/money.ts";
+import { MoneyError, normalizeCurrency, parseDecimalAmount } from "../core/money.ts";
 import type {
 	AccountType,
+	BookkeepingResolutionSource,
 	RecordTransactionBookkeepingInput,
 	TransactionCustomFieldValue,
 	TransactionSource,
@@ -22,6 +23,17 @@ export type BookkeepingExportFormat = "csv" | "json";
 export type BookkeepingExportRowMode = "transactions" | "postings";
 export type BookkeepingExportReversalMode = "include" | "exclude" | "only";
 export type BookkeepingExportAmountSign = "debit-positive" | "credit-positive" | "absolute";
+export type BookkeepingExportAmountRole = "pnl" | "funding" | "debit" | "credit";
+export type BookkeepingExportDateFormat = "yyyy-mm-dd" | "yyyy/mm/dd" | "dd/mm/yyyy";
+export type BookkeepingMatchFailReason =
+	| "kind"
+	| "descriptionContains"
+	| "amount"
+	| "amountPerPerson"
+	| "amountUnrepresentable"
+	| "all"
+	| "any"
+	| "not";
 
 export const BOOKKEEPING_EXPORT_COLUMN_SOURCES = [
 	"transaction.id",
@@ -29,6 +41,7 @@ export const BOOKKEEPING_EXPORT_COLUMN_SOURCES = [
 	"transaction.occurredAt",
 	"transaction.date",
 	"transaction.currency",
+	"transaction.amount",
 	"transaction.source",
 	"transaction.idempotencyKey",
 	"transaction.reversalOf",
@@ -36,6 +49,7 @@ export const BOOKKEEPING_EXPORT_COLUMN_SOURCES = [
 	"bookkeeping.categoryId",
 	"bookkeeping.categoryLabel",
 	"bookkeeping.ruleId",
+	"bookkeeping.shortcutId",
 	"bookkeeping.resolutionSource",
 	"posting.id",
 	"posting.accountId",
@@ -43,6 +57,9 @@ export const BOOKKEEPING_EXPORT_COLUMN_SOURCES = [
 	"posting.amount",
 	"posting.memo",
 ] as const;
+
+export const BOOKKEEPING_EXPORT_DATE_FORMATS = ["yyyy-mm-dd", "yyyy/mm/dd", "dd/mm/yyyy"] as const;
+export const BOOKKEEPING_EXPORT_AMOUNT_ROLES = ["pnl", "funding", "debit", "credit"] as const;
 
 export type BookkeepingExportColumnSource =
 	| (typeof BOOKKEEPING_EXPORT_COLUMN_SOURCES)[number]
@@ -65,9 +82,29 @@ export interface CustomFieldDefinition {
 	allowedValues?: readonly string[];
 }
 
-export interface CategorizationRuleMatch {
+export interface AmountBound {
+	eq?: string;
+	gte?: string;
+	gt?: string;
+	lte?: string;
+	lt?: string;
+}
+
+export interface AmountPerPersonBound extends AmountBound {
+	participantCount: number;
+}
+
+export interface RulePredicate {
+	descriptionContains?: string;
+	amount?: AmountBound;
+	amountPerPerson?: AmountPerPersonBound;
+	all?: readonly RulePredicate[];
+	any?: readonly RulePredicate[];
+	not?: RulePredicate;
+}
+
+export interface CategorizationRuleMatch extends RulePredicate {
 	transactionKind: BookkeepingCategoryKind;
-	descriptionContains: string;
 }
 
 export interface CategorizationRuleAssignment {
@@ -82,9 +119,22 @@ export interface CategorizationRuleDefinition {
 	assign: CategorizationRuleAssignment;
 }
 
+export interface CaptureShortcutDefinition {
+	id: string;
+	label: string;
+	transactionKind: BookkeepingCategoryKind;
+	description: string;
+	amount?: string;
+	categoryId?: string;
+	customFields?: Readonly<Record<string, CustomFieldValue>>;
+}
+
 export interface BookkeepingExportColumnDefinition {
 	header: string;
-	source: BookkeepingExportColumnSource;
+	source?: BookkeepingExportColumnSource;
+	literal?: string;
+	amountRole?: BookkeepingExportAmountRole;
+	dateFormat?: BookkeepingExportDateFormat;
 }
 
 export interface BookkeepingExportFilterDefinition {
@@ -101,6 +151,7 @@ export interface BookkeepingExportProfileDefinition {
 	reversals: BookkeepingExportReversalMode;
 	amountSign: BookkeepingExportAmountSign;
 	delimiter?: "," | ";" | "\t";
+	utf8Bom?: boolean;
 	filters?: BookkeepingExportFilterDefinition;
 	columns: readonly BookkeepingExportColumnDefinition[];
 }
@@ -111,6 +162,7 @@ export interface BookkeepingProfile {
 	categories: readonly BookkeepingCategoryDefinition[];
 	customFields: readonly CustomFieldDefinition[];
 	categorizationRules: readonly CategorizationRuleDefinition[];
+	captureShortcuts?: readonly CaptureShortcutDefinition[];
 	exportProfiles: readonly BookkeepingExportProfileDefinition[];
 }
 
@@ -140,6 +192,7 @@ export interface BookkeepingProfilePatch {
 	categories?: BookkeepingProfileCollectionPatch<BookkeepingCategoryDefinition>;
 	customFields?: BookkeepingProfileCollectionPatch<CustomFieldDefinition>;
 	categorizationRules?: BookkeepingProfileCollectionPatch<CategorizationRuleDefinition>;
+	captureShortcuts?: BookkeepingProfileCollectionPatch<CaptureShortcutDefinition>;
 	exportProfiles?: BookkeepingProfileCollectionPatch<BookkeepingExportProfileDefinition>;
 }
 
@@ -154,14 +207,53 @@ export interface ResolveBookkeepingTransactionInput {
 	transactionKind: BookkeepingCategoryKind;
 	description: string;
 	currency: string;
+	amount: string;
 	accountId?: string;
 	categoryId?: string;
+	shortcutId?: string;
 	customFields?: unknown;
 }
 
 export interface ResolvedBookkeepingTransaction {
 	accountId: string;
 	bookkeeping: RecordTransactionBookkeepingInput;
+}
+
+export interface ExpandCaptureShortcutInput {
+	householdId: string;
+	transactionKind: BookkeepingCategoryKind;
+	shortcutId: string;
+	currency: string;
+	description?: string;
+	amount?: string;
+	categoryId?: string;
+	customFields?: Readonly<Record<string, TransactionCustomFieldValue>>;
+}
+
+export interface ExpandedCaptureShortcut {
+	description: string;
+	amount: string;
+	categoryId?: string;
+	customFields?: Readonly<Record<string, TransactionCustomFieldValue>>;
+}
+
+export interface BookkeepingMatchRejectedRule {
+	ruleId: string;
+	priority: number;
+	reason: BookkeepingMatchFailReason;
+	path: string;
+}
+
+export interface BookkeepingMatchExplanation {
+	resolutionSource: Exclude<BookkeepingResolutionSource, "reversal">;
+	categoryId?: string;
+	categoryLabel?: string;
+	categorizationRuleId?: string;
+	shortcutId?: string;
+	winnerPath?: string;
+	rejected: readonly BookkeepingMatchRejectedRule[];
+	totalRejectedRules: number;
+	rejectedTruncated: boolean;
 }
 
 export interface ActivateBookkeepingProfileResult {
@@ -180,6 +272,15 @@ interface ProfileRevisionRow {
 	created_at: string;
 }
 
+interface ClassifiedTransaction {
+	active: ActiveBookkeepingProfile;
+	currency: string;
+	category?: BookkeepingCategoryDefinition;
+	matchedRule?: CategorizationRuleDefinition;
+	accountId?: string;
+	explanation: BookkeepingMatchExplanation;
+}
+
 interface BoundAccountRow {
 	id: string;
 	household_id: string;
@@ -190,12 +291,19 @@ interface BoundAccountRow {
 
 const IDENTIFIER_PATTERN = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const DECIMAL_AMOUNT_PATTERN = /^\d+(?:\.\d{1,3})?$/;
 const MAX_PROFILE_BYTES = 1_000_000;
 const MAX_CATEGORIES = 500;
 const MAX_CUSTOM_FIELDS = 200;
 const MAX_RULES = 1_000;
+const MAX_CAPTURE_SHORTCUTS = 200;
 const MAX_EXPORT_PROFILES = 100;
 const MAX_EXPORT_COLUMNS = 100;
+const MAX_PREDICATE_DEPTH = 8;
+const MAX_PREDICATE_NODES = 32;
+const MAX_EXPLAIN_REJECTED_RULES = 100;
+const PREDICATE_KEYS = ["descriptionContains", "amount", "amountPerPerson", "all", "any", "not"] as const;
+const AMOUNT_BOUND_KEYS = ["eq", "gte", "gt", "lte", "lt"] as const;
 
 const DEFAULT_PROFILE: BookkeepingProfile = freezeProfile({
 	formatVersion: BOOKKEEPING_PROFILE_FORMAT_VERSION,
@@ -361,44 +469,55 @@ export class BookkeepingProfileService {
 		});
 	}
 
-	resolveTransaction(input: ResolveBookkeepingTransactionInput): ResolvedBookkeepingTransaction {
+	expandCaptureShortcut(input: ExpandCaptureShortcutInput): ExpandedCaptureShortcut {
 		const active = this.getActiveProfile(input.householdId);
-		const currency = normalizeCurrency(input.currency);
-		const categoriesById = new Map(active.profile.categories.map((category) => [category.id, category]));
-		const fieldsById = new Map(active.profile.customFields.map((field) => [field.id, field]));
-		const normalizedDescription = input.description.trim().toLocaleLowerCase("en-US");
-		const matchedRule = active.profile.categorizationRules.find(
-			(rule) =>
-				rule.match.transactionKind === input.transactionKind &&
-				normalizedDescription.includes(rule.match.descriptionContains),
-		);
-
-		const explicitCategoryId = input.categoryId
-			? requireIdentifier(input.categoryId, "Transaction categoryId")
-			: undefined;
-		let category = explicitCategoryId ? categoriesById.get(explicitCategoryId) : undefined;
-		if (explicitCategoryId && !category) {
-			throw new BookkeepingProfileError(`Unknown bookkeeping category "${explicitCategoryId}".`);
-		}
-		if (!category && matchedRule?.assign.categoryId) {
-			category = categoriesById.get(matchedRule.assign.categoryId);
-		}
-		if (category && category.kind !== input.transactionKind) {
+		const shortcutId = requireIdentifier(input.shortcutId, "Capture shortcutId");
+		const shortcut = (active.profile.captureShortcuts ?? []).find((item) => item.id === shortcutId);
+		if (!shortcut) throw new BookkeepingProfileError(`Unknown capture shortcut "${shortcutId}".`);
+		if (shortcut.transactionKind !== input.transactionKind) {
 			throw new BookkeepingProfileError(
-				`Category "${category.id}" cannot classify an ${input.transactionKind} transaction.`,
+				`Capture shortcut "${shortcutId}" cannot expand an ${input.transactionKind} transaction.`,
 			);
 		}
+		const description = input.description?.trim() || shortcut.description;
+		const amount = input.amount?.trim() || shortcut.amount;
+		if (!description) {
+			throw new BookkeepingProfileError(`Capture shortcut "${shortcutId}" did not supply a description.`);
+		}
+		if (!amount) {
+			throw new BookkeepingProfileError(`Capture shortcut "${shortcutId}" did not supply an amount.`);
+		}
+		const currency = normalizeCurrency(input.currency);
+		try {
+			parseDecimalAmount(amount, currency);
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			throw new BookkeepingProfileError(
+				`Capture shortcut "${shortcutId}" amount is invalid for ${currency}: ${reason}`,
+			);
+		}
+		const customFields = {
+			...(shortcut.customFields ?? {}),
+			...(input.customFields ?? {}),
+		};
+		return {
+			description,
+			amount,
+			...(input.categoryId ? { categoryId: input.categoryId } : {}),
+			...(Object.keys(customFields).length > 0 ? { customFields } : {}),
+		};
+	}
 
-		const explicitAccountId = input.accountId?.trim() || undefined;
-		if (!category && explicitAccountId) {
-			category = active.profile.categories.find(
-				(candidate) =>
-					candidate.kind === input.transactionKind && candidate.accountIds?.[currency] === explicitAccountId,
-			);
-		}
-		const accountId = explicitAccountId ?? category?.accountIds?.[currency];
+	explainMatch(input: ResolveBookkeepingTransactionInput): BookkeepingMatchExplanation {
+		return this.classifyTransaction(input).explanation;
+	}
+
+	resolveTransaction(input: ResolveBookkeepingTransactionInput): ResolvedBookkeepingTransaction {
+		const { active, currency, category, matchedRule, accountId, explanation } = this.classifyTransaction(input);
 		if (!accountId) {
-			const categoryMessage = category ? `Category "${category.id}" has no ${currency} account binding.` : "No category matched.";
+			const categoryMessage = category
+				? `Category "${category.id}" has no ${currency} account binding.`
+				: "No category matched.";
 			throw new BookkeepingProfileError(
 				`${categoryMessage} Provide a compatible account id or activate a category account binding.`,
 			);
@@ -423,6 +542,7 @@ export class BookkeepingProfileService {
 			);
 		}
 
+		const fieldsById = new Map(active.profile.customFields.map((field) => [field.id, field]));
 		const customFields: Record<string, TransactionCustomFieldValue> = {
 			...(matchedRule?.assign.fields ?? {}),
 		};
@@ -457,14 +577,101 @@ export class BookkeepingProfileService {
 				profileHash: active.profileHash,
 				...(category ? { categoryId: category.id, categoryLabel: category.label } : {}),
 				...(matchedRule ? { categorizationRuleId: matchedRule.id } : {}),
+				...(explanation.shortcutId ? { shortcutId: explanation.shortcutId } : {}),
 				customFields,
-				resolutionSource: explicitCategoryId
-					? "explicit"
-					: matchedRule
-						? "rule"
-						: category
-							? "account_binding"
-							: "unclassified",
+				resolutionSource: explanation.resolutionSource,
+			},
+		};
+	}
+
+	private classifyTransaction(input: ResolveBookkeepingTransactionInput): ClassifiedTransaction {
+		const active = this.getActiveProfile(input.householdId);
+		const currency = normalizeCurrency(input.currency);
+		const categoriesById = new Map(active.profile.categories.map((category) => [category.id, category]));
+		const normalizedDescription = input.description.trim().toLocaleLowerCase("en-US");
+		let amountMinor: number;
+		try {
+			amountMinor = parseDecimalAmount(input.amount, currency);
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			throw new BookkeepingProfileError(`Transaction amount is invalid for ${currency}: ${reason}`);
+		}
+		const { matchedRule, rejected, totalRejectedRules, rejectedTruncated, winnerPath } =
+			matchCategorizationRules(active.profile.categorizationRules, {
+				transactionKind: input.transactionKind,
+				description: normalizedDescription,
+				amountMinor,
+				currency,
+			});
+
+		const explicitCategoryId = input.categoryId
+			? requireIdentifier(input.categoryId, "Transaction categoryId")
+			: undefined;
+		const shortcutId = input.shortcutId
+			? requireIdentifier(input.shortcutId, "Capture shortcutId")
+			: undefined;
+		let shortcutCategoryId: string | undefined;
+		if (shortcutId) {
+			const shortcut = (active.profile.captureShortcuts ?? []).find((item) => item.id === shortcutId);
+			if (!shortcut) throw new BookkeepingProfileError(`Unknown capture shortcut "${shortcutId}".`);
+			if (shortcut.transactionKind !== input.transactionKind) {
+				throw new BookkeepingProfileError(
+					`Capture shortcut "${shortcutId}" cannot expand an ${input.transactionKind} transaction.`,
+				);
+			}
+			if (!explicitCategoryId && shortcut.categoryId) shortcutCategoryId = shortcut.categoryId;
+		}
+		let category = explicitCategoryId ? categoriesById.get(explicitCategoryId) : undefined;
+		if (explicitCategoryId && !category) {
+			throw new BookkeepingProfileError(`Unknown bookkeeping category "${explicitCategoryId}".`);
+		}
+		if (!category && shortcutCategoryId) {
+			category = categoriesById.get(shortcutCategoryId);
+			if (!category) {
+				throw new BookkeepingProfileError(`Unknown bookkeeping category "${shortcutCategoryId}".`);
+			}
+		}
+		if (!category && matchedRule?.assign.categoryId) {
+			category = categoriesById.get(matchedRule.assign.categoryId);
+		}
+		if (category && category.kind !== input.transactionKind) {
+			throw new BookkeepingProfileError(
+				`Category "${category.id}" cannot classify an ${input.transactionKind} transaction.`,
+			);
+		}
+
+		const explicitAccountId = input.accountId?.trim() || undefined;
+		if (!category && explicitAccountId) {
+			category = active.profile.categories.find(
+				(candidate) =>
+					candidate.kind === input.transactionKind && candidate.accountIds?.[currency] === explicitAccountId,
+			);
+		}
+		const accountId = explicitAccountId ?? category?.accountIds?.[currency];
+		const resolutionSource: Exclude<BookkeepingResolutionSource, "reversal"> = explicitCategoryId
+			? "explicit"
+			: shortcutCategoryId
+				? "shortcut"
+				: matchedRule
+					? "rule"
+					: category
+						? "account_binding"
+						: "unclassified";
+		return {
+			active,
+			currency,
+			...(category ? { category } : {}),
+			...(matchedRule ? { matchedRule } : {}),
+			...(accountId ? { accountId } : {}),
+			explanation: {
+				resolutionSource,
+				...(category ? { categoryId: category.id, categoryLabel: category.label } : {}),
+				...(matchedRule ? { categorizationRuleId: matchedRule.id } : {}),
+				...(shortcutId ? { shortcutId } : {}),
+				...(winnerPath ? { winnerPath } : {}),
+				rejected,
+				totalRejectedRules,
+				rejectedTruncated,
 			},
 		};
 	}
@@ -539,7 +746,7 @@ export function applyBookkeepingProfilePatch(
 	const patch = requireRecord(value, "Bookkeeping profile patch");
 	requireOnlyKeys(
 		patch,
-		["categories", "customFields", "categorizationRules", "exportProfiles"],
+		["categories", "customFields", "categorizationRules", "captureShortcuts", "exportProfiles"],
 		"Bookkeeping profile patch",
 	);
 	if (Object.keys(patch).length === 0) {
@@ -570,6 +777,12 @@ export function applyBookkeepingProfilePatch(
 		"exportProfiles",
 		(value, index) => validateExportProfile(value, index),
 	);
+	const captureShortcuts = applyCollectionPatch(
+		profile.captureShortcuts ?? [],
+		patch.captureShortcuts,
+		"captureShortcuts",
+		(value, index) => validateCaptureShortcut(value, index),
+	);
 
 	return validateBookkeepingProfile({
 		formatVersion: BOOKKEEPING_PROFILE_FORMAT_VERSION,
@@ -578,6 +791,7 @@ export function applyBookkeepingProfilePatch(
 		customFields,
 		categorizationRules,
 		exportProfiles,
+		...(captureShortcuts.length > 0 ? { captureShortcuts } : {}),
 	});
 }
 
@@ -585,7 +799,15 @@ export function validateBookkeepingProfile(value: unknown): BookkeepingProfile {
 	const record = requireRecord(value, "Bookkeeping profile");
 	requireOnlyKeys(
 		record,
-		["formatVersion", "extends", "categories", "customFields", "categorizationRules", "exportProfiles"],
+		[
+			"formatVersion",
+			"extends",
+			"categories",
+			"customFields",
+			"categorizationRules",
+			"captureShortcuts",
+			"exportProfiles",
+		],
 		"Bookkeeping profile",
 	);
 	if (record.formatVersion !== BOOKKEEPING_PROFILE_FORMAT_VERSION) {
@@ -617,13 +839,23 @@ export function validateBookkeepingProfile(value: unknown): BookkeepingProfile {
 		"Bookkeeping profile exportProfiles",
 		MAX_EXPORT_PROFILES,
 	).map((profile, index) => validateExportProfile(profile, index));
+	const captureShortcuts =
+		record.captureShortcuts === undefined
+			? []
+			: requireArray(
+					record.captureShortcuts,
+					"Bookkeeping profile captureShortcuts",
+					MAX_CAPTURE_SHORTCUTS,
+				).map((shortcut, index) => validateCaptureShortcut(shortcut, index));
 
 	assertUniqueIds(categories, "category");
 	assertUniqueIds(customFields, "custom field");
 	assertUniqueIds(categorizationRules, "categorization rule");
+	assertUniqueIds(captureShortcuts, "capture shortcut");
 	assertUniqueIds(exportProfiles, "export profile");
 	validateCategoryGraph(categories);
 	validateRuleReferences(categories, customFields, categorizationRules);
+	validateShortcutReferences(categories, customFields, captureShortcuts);
 	validateExportReferences(categories, customFields, exportProfiles);
 
 	return freezeProfile({
@@ -635,6 +867,7 @@ export function validateBookkeepingProfile(value: unknown): BookkeepingProfile {
 			(first, second) => second.priority - first.priority || first.id.localeCompare(second.id),
 		),
 		exportProfiles,
+		...(captureShortcuts.length > 0 ? { captureShortcuts } : {}),
 	});
 }
 
@@ -720,16 +953,15 @@ function validateCategorizationRule(value: unknown, index: number): Categorizati
 		throw new BookkeepingProfileError(`${label} priority must be an integer from 0 to 100000.`);
 	}
 
-	const match = requireRecord(record.match, `${label} match`);
-	requireOnlyKeys(match, ["transactionKind", "descriptionContains"], `${label} match`);
-	if (match.transactionKind !== "expense" && match.transactionKind !== "income") {
+	const matchRecord = requireRecord(record.match, `${label} match`);
+	if (matchRecord.transactionKind !== "expense" && matchRecord.transactionKind !== "income") {
 		throw new BookkeepingProfileError(`${label} match.transactionKind must be "expense" or "income".`);
 	}
-	const descriptionContains = requireText(
-		match.descriptionContains,
-		`${label} match.descriptionContains`,
-		200,
-	).toLocaleLowerCase("en-US");
+	const predicate = validateRulePredicate(matchRecord, `${label} match`, 1, { count: 0 });
+	const match: CategorizationRuleMatch = {
+		transactionKind: matchRecord.transactionKind,
+		...predicate,
+	};
 
 	const assign = requireRecord(record.assign, `${label} assign`);
 	requireOnlyKeys(assign, ["categoryId", "fields"], `${label} assign`);
@@ -758,11 +990,42 @@ function validateCategorizationRule(value: unknown, index: number): Categorizati
 	return {
 		id,
 		priority: Number(record.priority),
-		match: { transactionKind: match.transactionKind, descriptionContains },
+		match,
 		assign: {
 			...(categoryId ? { categoryId } : {}),
 			...(fields && Object.keys(fields).length > 0 ? { fields } : {}),
 		},
+	};
+}
+
+function validateCaptureShortcut(value: unknown, index: number): CaptureShortcutDefinition {
+	const label = `Capture shortcut at index ${index}`;
+	const record = requireRecord(value, label);
+	requireOnlyKeys(
+		record,
+		["id", "label", "transactionKind", "description", "amount", "categoryId", "customFields"],
+		label,
+	);
+	const id = requireIdentifier(record.id, `${label} id`);
+	const shortcutLabel = requireText(record.label, `${label} label`, 100);
+	if (record.transactionKind !== "expense" && record.transactionKind !== "income") {
+		throw new BookkeepingProfileError(`${label} transactionKind must be "expense" or "income".`);
+	}
+	const description = requireText(record.description, `${label} description`, 200);
+	const amount = record.amount === undefined ? undefined : requireDecimalAmount(record.amount, `${label} amount`);
+	const categoryId = optionalIdentifier(record.categoryId, `${label} categoryId`);
+	let customFields: Record<string, CustomFieldValue> | undefined;
+	if (record.customFields !== undefined) {
+		customFields = validateAssignedFields(record.customFields, `${label} customFields`);
+	}
+	return {
+		id,
+		label: shortcutLabel,
+		transactionKind: record.transactionKind,
+		description,
+		...(amount ? { amount } : {}),
+		...(categoryId ? { categoryId } : {}),
+		...(customFields && Object.keys(customFields).length > 0 ? { customFields } : {}),
 	};
 }
 
@@ -771,7 +1034,7 @@ function validateExportProfile(value: unknown, index: number): BookkeepingExport
 	const record = requireRecord(value, label);
 	requireOnlyKeys(
 		record,
-		["id", "label", "format", "rowMode", "reversals", "amountSign", "delimiter", "filters", "columns"],
+		["id", "label", "format", "rowMode", "reversals", "amountSign", "delimiter", "utf8Bom", "filters", "columns"],
 		label,
 	);
 	const id = requireIdentifier(record.id, `${label} id`);
@@ -797,6 +1060,13 @@ function validateExportProfile(value: unknown, index: number): BookkeepingExport
 		delimiter = record.delimiter;
 	} else if (record.format === "csv") {
 		delimiter = ",";
+	}
+	let utf8Bom: boolean | undefined;
+	if (record.utf8Bom !== undefined) {
+		if (typeof record.utf8Bom !== "boolean") {
+			throw new BookkeepingProfileError(`${label} utf8Bom must be a boolean.`);
+		}
+		if (record.utf8Bom) utf8Bom = true;
 	}
 
 	let filters: BookkeepingExportFilterDefinition | undefined;
@@ -830,8 +1100,19 @@ function validateExportProfile(value: unknown, index: number): BookkeepingExport
 		(column, columnIndex): BookkeepingExportColumnDefinition => {
 			const columnLabel = `${label} column at index ${columnIndex}`;
 			const columnRecord = requireRecord(column, columnLabel);
-			requireOnlyKeys(columnRecord, ["header", "source"], columnLabel);
+			requireOnlyKeys(columnRecord, ["header", "source", "literal", "amountRole", "dateFormat"], columnLabel);
 			const header = requireText(columnRecord.header, `${columnLabel} header`, 100);
+			const hasSource = columnRecord.source !== undefined;
+			const hasLiteral = columnRecord.literal !== undefined;
+			if (hasSource === hasLiteral) {
+				throw new BookkeepingProfileError(`${columnLabel} must use exactly one of source or literal.`);
+			}
+			if (hasLiteral) {
+				if (columnRecord.amountRole !== undefined || columnRecord.dateFormat !== undefined) {
+					throw new BookkeepingProfileError(`${columnLabel} literal cannot set amountRole or dateFormat.`);
+				}
+				return { header, literal: requireText(columnRecord.literal, `${columnLabel} literal`, 200) };
+			}
 			const source = requireText(columnRecord.source, `${columnLabel} source`, 120);
 			if (!isExportColumnSource(source)) {
 				throw new BookkeepingProfileError(`${columnLabel} has unsupported source "${source}".`);
@@ -839,7 +1120,42 @@ function validateExportProfile(value: unknown, index: number): BookkeepingExport
 			if (record.rowMode === "transactions" && source.startsWith("posting.")) {
 				throw new BookkeepingProfileError(`${columnLabel} cannot use a posting source in transaction row mode.`);
 			}
-			return { header, source };
+			if (source === "transaction.amount") {
+				if (record.rowMode !== "transactions") {
+					throw new BookkeepingProfileError(
+						`${columnLabel} can use transaction.amount only in transaction row mode.`,
+					);
+				}
+				if (!isOneOf(columnRecord.amountRole, BOOKKEEPING_EXPORT_AMOUNT_ROLES)) {
+					throw new BookkeepingProfileError(
+						`${columnLabel} amountRole must be "pnl", "funding", "debit", or "credit".`,
+					);
+				}
+			} else if (columnRecord.amountRole !== undefined) {
+				throw new BookkeepingProfileError(`${columnLabel} amountRole is valid only for transaction.amount.`);
+			}
+			let dateFormat: BookkeepingExportDateFormat | undefined;
+			if (columnRecord.dateFormat !== undefined) {
+				if (source !== "transaction.date" && source !== "transaction.occurredAt") {
+					throw new BookkeepingProfileError(
+						`${columnLabel} dateFormat is valid only for transaction.date or transaction.occurredAt.`,
+					);
+				}
+				if (!isOneOf(columnRecord.dateFormat, BOOKKEEPING_EXPORT_DATE_FORMATS)) {
+					throw new BookkeepingProfileError(
+						`${columnLabel} dateFormat must be "yyyy-mm-dd", "yyyy/mm/dd", or "dd/mm/yyyy".`,
+					);
+				}
+				if (columnRecord.dateFormat !== "yyyy-mm-dd") dateFormat = columnRecord.dateFormat;
+			}
+			return {
+				header,
+				source,
+				...(source === "transaction.amount"
+					? { amountRole: columnRecord.amountRole as BookkeepingExportAmountRole }
+					: {}),
+				...(dateFormat ? { dateFormat } : {}),
+			};
 		},
 	);
 	if (columns.length === 0) throw new BookkeepingProfileError(`${label} must contain at least one column.`);
@@ -854,6 +1170,7 @@ function validateExportProfile(value: unknown, index: number): BookkeepingExport
 		reversals: record.reversals,
 		amountSign: record.amountSign,
 		...(delimiter ? { delimiter } : {}),
+		...(utf8Bom ? { utf8Bom } : {}),
 		...(filters && Object.keys(filters).length > 0 ? { filters } : {}),
 		columns,
 	};
@@ -923,6 +1240,39 @@ function validateRuleReferences(
 	}
 }
 
+function validateShortcutReferences(
+	categories: readonly BookkeepingCategoryDefinition[],
+	customFields: readonly CustomFieldDefinition[],
+	shortcuts: readonly CaptureShortcutDefinition[],
+): void {
+	const categoriesById = new Map(categories.map((category) => [category.id, category]));
+	const fieldsById = new Map(customFields.map((field) => [field.id, field]));
+	for (const shortcut of shortcuts) {
+		if (shortcut.categoryId) {
+			const category = categoriesById.get(shortcut.categoryId);
+			if (!category) {
+				throw new BookkeepingProfileError(
+					`Capture shortcut "${shortcut.id}" references unknown category "${shortcut.categoryId}".`,
+				);
+			}
+			if (category.kind !== shortcut.transactionKind) {
+				throw new BookkeepingProfileError(
+					`Capture shortcut "${shortcut.id}" cannot assign an ${category.kind} category to an ${shortcut.transactionKind} transaction.`,
+				);
+			}
+		}
+		for (const [fieldId, value] of Object.entries(shortcut.customFields ?? {})) {
+			const field = fieldsById.get(fieldId);
+			if (!field) {
+				throw new BookkeepingProfileError(
+					`Capture shortcut "${shortcut.id}" references unknown custom field "${fieldId}".`,
+				);
+			}
+			validateCustomFieldValue(field, value, `Capture shortcut "${shortcut.id}" field "${fieldId}"`);
+		}
+	}
+}
+
 function validateExportReferences(
 	categories: readonly BookkeepingCategoryDefinition[],
 	customFields: readonly CustomFieldDefinition[],
@@ -939,7 +1289,7 @@ function validateExportReferences(
 			}
 		}
 		for (const column of exportProfile.columns) {
-			if (!column.source.startsWith("customFields.")) continue;
+			if (!column.source?.startsWith("customFields.")) continue;
 			const fieldId = column.source.slice("customFields.".length);
 			const field = fieldsById.get(fieldId);
 			if (!field) {
@@ -1063,10 +1413,14 @@ function freezeProfile(profile: BookkeepingProfile): BookkeepingProfile {
 		Object.freeze(field);
 	}
 	for (const rule of profile.categorizationRules) {
-		Object.freeze(rule.match);
+		freezePredicate(rule.match);
 		if (rule.assign.fields) Object.freeze(rule.assign.fields);
 		Object.freeze(rule.assign);
 		Object.freeze(rule);
+	}
+	for (const shortcut of profile.captureShortcuts ?? []) {
+		if (shortcut.customFields) Object.freeze(shortcut.customFields);
+		Object.freeze(shortcut);
 	}
 	for (const exportProfile of profile.exportProfiles) {
 		if (exportProfile.filters) {
@@ -1082,6 +1436,7 @@ function freezeProfile(profile: BookkeepingProfile): BookkeepingProfile {
 	Object.freeze(profile.categories);
 	Object.freeze(profile.customFields);
 	Object.freeze(profile.categorizationRules);
+	if (profile.captureShortcuts) Object.freeze(profile.captureShortcuts);
 	Object.freeze(profile.exportProfiles);
 	return Object.freeze(profile);
 }
@@ -1185,4 +1540,314 @@ function isValidDate(value: string): boolean {
 
 function isOneOf<const T extends readonly string[]>(value: unknown, allowed: T): value is T[number] {
 	return typeof value === "string" && allowed.includes(value);
+}
+
+interface RuleMatchContext {
+	transactionKind: BookkeepingCategoryKind;
+	description: string;
+	amountMinor: number;
+	currency: string;
+}
+
+/** A bound is unrepresentable when the transaction currency cannot express it, not when the amount misses it. */
+type AmountBoundComparison = "match" | "miss" | "unrepresentable";
+
+function validateRulePredicate(
+	value: unknown,
+	label: string,
+	depth: number,
+	nodes: { count: number },
+): RulePredicate {
+	if (depth > MAX_PREDICATE_DEPTH) {
+		throw new BookkeepingProfileError(`${label} exceeds the maximum match nesting depth of ${MAX_PREDICATE_DEPTH}.`);
+	}
+	nodes.count += 1;
+	if (nodes.count > MAX_PREDICATE_NODES) {
+		throw new BookkeepingProfileError(`${label} exceeds the maximum of ${MAX_PREDICATE_NODES} match nodes.`);
+	}
+	const record = requireRecord(value, label);
+	if (depth > 1 && record.transactionKind !== undefined) {
+		throw new BookkeepingProfileError(`${label} transactionKind is only allowed on the root match.`);
+	}
+	requireOnlyKeys(record, depth === 1 ? ["transactionKind", ...PREDICATE_KEYS] : PREDICATE_KEYS, label);
+	const present = PREDICATE_KEYS.filter((key) => record[key] !== undefined);
+	if (present.length !== 1) {
+		throw new BookkeepingProfileError(
+			`${label} must contain exactly one of ${PREDICATE_KEYS.join(", ")}.`,
+		);
+	}
+	const key = present[0];
+	if (key === "descriptionContains") {
+		return {
+			descriptionContains: requireText(record.descriptionContains, `${label} descriptionContains`, 200).toLocaleLowerCase(
+				"en-US",
+			),
+		};
+	}
+	if (key === "amount") {
+		return { amount: validateAmountBound(record.amount, `${label} amount`) };
+	}
+	if (key === "amountPerPerson") {
+		const boundRecord = requireRecord(record.amountPerPerson, `${label} amountPerPerson`);
+		requireOnlyKeys(boundRecord, [...AMOUNT_BOUND_KEYS, "participantCount"], `${label} amountPerPerson`);
+		if (!Number.isSafeInteger(boundRecord.participantCount) || Number(boundRecord.participantCount) < 1) {
+			throw new BookkeepingProfileError(`${label} amountPerPerson.participantCount must be an integer >= 1.`);
+		}
+		const boundOnly: Record<string, unknown> = {};
+		for (const boundKey of AMOUNT_BOUND_KEYS) {
+			if (boundRecord[boundKey] !== undefined) boundOnly[boundKey] = boundRecord[boundKey];
+		}
+		return {
+			amountPerPerson: {
+				...validateAmountBound(boundOnly, `${label} amountPerPerson`),
+				participantCount: Number(boundRecord.participantCount),
+			},
+		};
+	}
+	if (key === "not") {
+		return { not: validateRulePredicate(record.not, `${label} not`, depth + 1, nodes) };
+	}
+	if (key !== "all" && key !== "any") {
+		throw new BookkeepingProfileError(`${label} must contain exactly one of ${PREDICATE_KEYS.join(", ")}.`);
+	}
+	const children = requireArray(record[key], `${label} ${key}`, MAX_PREDICATE_NODES);
+	if (children.length === 0) {
+		throw new BookkeepingProfileError(`${label} ${key} must contain at least one predicate.`);
+	}
+	const nested = children.map((child, index) =>
+		validateRulePredicate(child, `${label} ${key}[${index}]`, depth + 1, nodes),
+	);
+	return key === "all" ? { all: nested } : { any: nested };
+}
+
+function validateAmountBound(value: unknown, label: string): AmountBound {
+	const record = requireRecord(value, label);
+	requireOnlyKeys(record, AMOUNT_BOUND_KEYS, label);
+	const present = AMOUNT_BOUND_KEYS.filter((key) => record[key] !== undefined);
+	if (present.length === 0) {
+		throw new BookkeepingProfileError(`${label} must contain at least one bound.`);
+	}
+	if (record.eq !== undefined && present.length > 1) {
+		throw new BookkeepingProfileError(`${label} eq cannot be combined with other bounds.`);
+	}
+	const bound: AmountBound = {};
+	for (const key of present) {
+		bound[key] = requireDecimalAmount(record[key], `${label} ${key}`);
+	}
+	return bound;
+}
+
+function requireDecimalAmount(value: unknown, label: string): string {
+	const text = requireText(value, label, 40);
+	if (!DECIMAL_AMOUNT_PATTERN.test(text)) {
+		throw new BookkeepingProfileError(`${label} must be a non-negative decimal string such as "38.50".`);
+	}
+	return text;
+}
+
+function validateAssignedFields(value: unknown, label: string): Record<string, CustomFieldValue> {
+	const fieldRecord = requireRecord(value, label);
+	const fields: Record<string, CustomFieldValue> = {};
+	const normalizedFieldIds = new Set<string>();
+	for (const [rawFieldId, fieldValue] of Object.entries(fieldRecord)) {
+		const fieldId = requireIdentifier(rawFieldId, `${label} field id`);
+		if (normalizedFieldIds.has(fieldId)) {
+			throw new BookkeepingProfileError(`${label} contains duplicate field "${fieldId}".`);
+		}
+		normalizedFieldIds.add(fieldId);
+		if (!["string", "boolean", "number"].includes(typeof fieldValue)) {
+			throw new BookkeepingProfileError(`${label} field "${fieldId}" has an unsupported value.`);
+		}
+		fields[fieldId] = fieldValue as CustomFieldValue;
+	}
+	return fields;
+}
+
+function freezePredicate(predicate: RulePredicate): void {
+	if (predicate.amount) Object.freeze(predicate.amount);
+	if (predicate.amountPerPerson) Object.freeze(predicate.amountPerPerson);
+	if (predicate.all) {
+		for (const child of predicate.all) freezePredicate(child);
+		Object.freeze(predicate.all);
+	}
+	if (predicate.any) {
+		for (const child of predicate.any) freezePredicate(child);
+		Object.freeze(predicate.any);
+	}
+	if (predicate.not) freezePredicate(predicate.not);
+	Object.freeze(predicate);
+}
+
+function matchCategorizationRules(
+	rules: readonly CategorizationRuleDefinition[],
+	context: RuleMatchContext,
+): {
+	matchedRule?: CategorizationRuleDefinition;
+	rejected: BookkeepingMatchRejectedRule[];
+	totalRejectedRules: number;
+	rejectedTruncated: boolean;
+	winnerPath?: string;
+} {
+	const rejected: BookkeepingMatchRejectedRule[] = [];
+	let totalRejectedRules = 0;
+	for (const rule of rules) {
+		const result = evaluateRuleMatch(rule.match, context);
+		if (result.ok) {
+			return {
+				matchedRule: rule,
+				rejected,
+				totalRejectedRules,
+				rejectedTruncated: totalRejectedRules > rejected.length,
+				winnerPath: result.path,
+			};
+		}
+		totalRejectedRules += 1;
+		if (rejected.length < MAX_EXPLAIN_REJECTED_RULES) {
+			rejected.push({ ruleId: rule.id, priority: rule.priority, reason: result.reason, path: result.path });
+		}
+	}
+	return {
+		rejected,
+		totalRejectedRules,
+		rejectedTruncated: totalRejectedRules > rejected.length,
+	};
+}
+
+function evaluateRuleMatch(
+	match: CategorizationRuleMatch,
+	context: RuleMatchContext,
+): { ok: true; path: string } | { ok: false; reason: BookkeepingMatchFailReason; path: string } {
+	if (match.transactionKind !== context.transactionKind) {
+		return { ok: false, reason: "kind", path: "transactionKind" };
+	}
+	return evaluatePredicate(match, context, "");
+}
+
+function evaluatePredicate(
+	predicate: RulePredicate,
+	context: RuleMatchContext,
+	prefix: string,
+): { ok: true; path: string } | { ok: false; reason: BookkeepingMatchFailReason; path: string } {
+	const path = (segment: string): string => (prefix ? `${prefix}.${segment}` : segment);
+	if (predicate.descriptionContains !== undefined) {
+		return context.description.includes(predicate.descriptionContains)
+			? { ok: true, path: path("descriptionContains") }
+			: { ok: false, reason: "descriptionContains", path: path("descriptionContains") };
+	}
+	if (predicate.amount) {
+		return amountOutcome(
+			compareBound(context.amountMinor, predicate.amount, context.currency, 1),
+			"amount",
+			path("amount"),
+		);
+	}
+	if (predicate.amountPerPerson) {
+		return amountOutcome(
+			compareBound(
+				context.amountMinor,
+				predicate.amountPerPerson,
+				context.currency,
+				predicate.amountPerPerson.participantCount,
+			),
+			"amountPerPerson",
+			path("amountPerPerson"),
+		);
+	}
+	if (predicate.not) {
+		const inner = evaluatePredicate(predicate.not, context, path("not"));
+		// Unrepresentable currency bounds are indeterminate: negation must not turn them into matches.
+		if (!inner.ok && inner.reason === "amountUnrepresentable") return inner;
+		return inner.ok
+			? { ok: false, reason: "not", path: path("not") }
+			: { ok: true, path: path("not") };
+	}
+	if (predicate.all) {
+		// Strong three-valued logic lets a definite false dominate an indeterminate comparison.
+		let unrepresentable:
+			| { ok: false; reason: Extract<BookkeepingMatchFailReason, "amountUnrepresentable">; path: string }
+			| undefined;
+		for (const [index, child] of predicate.all.entries()) {
+			const inner = evaluatePredicate(child, context, `${path("all")}[${index}]`);
+			if (inner.ok) continue;
+			if (inner.reason === "amountUnrepresentable") {
+				unrepresentable ??= { ok: false, reason: "amountUnrepresentable", path: inner.path };
+				continue;
+			}
+			return inner;
+		}
+		if (unrepresentable) return unrepresentable;
+		return { ok: true, path: path("all") };
+	}
+	if (predicate.any) {
+		// A definite true dominates; otherwise preserve the first indeterminate comparison.
+		let unrepresentable:
+			| { ok: false; reason: Extract<BookkeepingMatchFailReason, "amountUnrepresentable">; path: string }
+			| undefined;
+		for (const [index, child] of predicate.any.entries()) {
+			const inner = evaluatePredicate(child, context, `${path("any")}[${index}]`);
+			if (inner.ok) return { ok: true, path: path("any") };
+			if (inner.reason === "amountUnrepresentable") {
+				unrepresentable ??= { ok: false, reason: "amountUnrepresentable", path: inner.path };
+			}
+		}
+		if (unrepresentable) return unrepresentable;
+		return { ok: false, reason: "any", path: path("any") };
+	}
+	throw new TypeError("Validated rule predicate has no supported operator.");
+}
+
+function amountOutcome(
+	comparison: AmountBoundComparison,
+	reason: Extract<BookkeepingMatchFailReason, "amount" | "amountPerPerson">,
+	path: string,
+): { ok: true; path: string } | { ok: false; reason: BookkeepingMatchFailReason; path: string } {
+	if (comparison === "match") return { ok: true, path };
+	return { ok: false, reason: comparison === "unrepresentable" ? "amountUnrepresentable" : reason, path };
+}
+
+function compareBound(
+	amountMinor: number,
+	bound: AmountBound,
+	currency: string,
+	participantCount: number,
+): AmountBoundComparison {
+	const scaled = (value: string): number | undefined => {
+		try {
+			const thresholdMinor = parseDecimalAmount(value, currency);
+			const product = BigInt(thresholdMinor) * BigInt(participantCount);
+			if (product > BigInt(Number.MAX_SAFE_INTEGER) || product < BigInt(Number.MIN_SAFE_INTEGER)) {
+				return undefined;
+			}
+			return Number(product);
+		} catch (error) {
+			if (error instanceof MoneyError) return undefined;
+			throw error;
+		}
+	};
+	if (bound.eq !== undefined) {
+		const expected = scaled(bound.eq);
+		if (expected === undefined) return "unrepresentable";
+		return amountMinor === expected ? "match" : "miss";
+	}
+	if (bound.gte !== undefined) {
+		const minimum = scaled(bound.gte);
+		if (minimum === undefined) return "unrepresentable";
+		if (amountMinor < minimum) return "miss";
+	}
+	if (bound.gt !== undefined) {
+		const minimum = scaled(bound.gt);
+		if (minimum === undefined) return "unrepresentable";
+		if (amountMinor <= minimum) return "miss";
+	}
+	if (bound.lte !== undefined) {
+		const maximum = scaled(bound.lte);
+		if (maximum === undefined) return "unrepresentable";
+		if (amountMinor > maximum) return "miss";
+	}
+	if (bound.lt !== undefined) {
+		const maximum = scaled(bound.lt);
+		if (maximum === undefined) return "unrepresentable";
+		if (amountMinor >= maximum) return "miss";
+	}
+	return "match";
 }
