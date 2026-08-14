@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -149,6 +149,7 @@ test("bookkeeping DSL CLI checks and explicitly applies an external private over
 		categories: 19,
 		customFields: 1,
 		categorizationRules: 1,
+		captureShortcuts: 0,
 		exportProfiles: 1,
 	});
 
@@ -156,10 +157,72 @@ test("bookkeeping DSL CLI checks and explicitly applies an external private over
 	assert.equal(applied.status, 0, applied.stderr);
 	assert.equal(JSON.parse(applied.stdout).status, "activated");
 	assert.equal(JSON.parse(applied.stdout).revision, 1);
+	assert.match(readFileSync(dslPath, "utf8"), /^expected-revision 1$/m);
 
+	writeFileSync(dslPath, COMPLETE_DSL);
 	const stale = runCli(directory, environment, ["profile", "check-dsl", dslPath]);
 	assert.notEqual(stale.status, 0);
 	assert.match(stale.stderr, /revision conflict: expected 0, active revision is 1/);
+});
+
+test("bookkeeping DSL compiles amount predicates, shortcuts, and export primitives", () => {
+	const { profile } = compileBookkeepingDsl(
+		`folksum-bookkeeping 1
+expected-revision 0
+extends folksum/default@1
+
+shortcut transit.bus {
+  label "Bus"
+  kind expense
+  description "巴士"
+  amount "5.00"
+  category expense.transport
+}
+
+rule taxi.shared {
+  priority 250
+  when expense all {
+    description contains "的士"
+    amountPerPerson 2 gte "50"
+  }
+  category expense.transport
+}
+
+export household.csv {
+  label "Household CSV"
+  format csv
+  rows transactions
+  reversals include
+  amount-sign debit-positive
+  utf8-bom true
+  column "Date" transaction.date date-format dd/mm/yyyy
+  column "Amount" transaction.amount amount-role pnl
+  column "Kind" literal "expense"
+}
+`,
+		getDefaultBookkeepingProfile(),
+	);
+	assert.deepEqual(profile.captureShortcuts, [
+		{
+			id: "transit.bus",
+			label: "Bus",
+			transactionKind: "expense",
+			description: "巴士",
+			amount: "5.00",
+			categoryId: "expense.transport",
+		},
+	]);
+	assert.deepEqual(profile.categorizationRules.find((rule) => rule.id === "taxi.shared")?.match, {
+		transactionKind: "expense",
+		all: [{ descriptionContains: "的士" }, { amountPerPerson: { gte: "50", participantCount: 2 } }],
+	});
+	const exportProfile = profile.exportProfiles.find((item) => item.id === "household.csv");
+	assert.equal(exportProfile?.utf8Bom, true);
+	assert.deepEqual(exportProfile?.columns, [
+		{ header: "Date", source: "transaction.date", dateFormat: "dd/mm/yyyy" },
+		{ header: "Amount", source: "transaction.amount", amountRole: "pnl" },
+		{ header: "Kind", literal: "expense" },
+	]);
 });
 
 function createDirectory(context: TestContext): string {

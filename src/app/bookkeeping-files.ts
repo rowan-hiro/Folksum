@@ -13,6 +13,7 @@ import type { BookkeepingExportArtifact } from "./bookkeeping-export.ts";
 import {
 	compileBookkeepingDsl,
 	parseBookkeepingDsl,
+	rewriteExpectedRevision,
 	type BookkeepingDslDocument,
 } from "./bookkeeping-dsl.ts";
 import {
@@ -132,6 +133,37 @@ export function readBookkeepingDslFile(
 		if (error instanceof BookkeepingFileError) throw error;
 		const reason = error instanceof Error ? error.message : String(error);
 		throw new BookkeepingFileError(reason);
+	}
+}
+
+export function rewriteBookkeepingDslExpectedRevision(
+	path: string,
+	revision: number,
+	options: { cwd?: string; text?: string } = {},
+): string {
+	const resolvedPath = resolve(options.cwd ?? process.cwd(), path);
+	let text = options.text;
+	if (text === undefined) {
+		try {
+			text = readFileSync(resolvedPath, "utf8");
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			throw new BookkeepingFileError(`Could not read bookkeeping DSL file ${resolvedPath}: ${reason}`);
+		}
+	}
+	const next = rewriteExpectedRevision(text, revision, resolvedPath);
+	if (next === text) return resolvedPath;
+	const temporaryPath = `${resolvedPath}.${process.pid}.${randomUUID()}.tmp`;
+	try {
+		writeFileSync(temporaryPath, next, { encoding: "utf8", flag: "wx" });
+		renameSync(temporaryPath, resolvedPath);
+		return resolvedPath;
+	} catch (error) {
+		if (existsSync(temporaryPath)) rmSync(temporaryPath, { force: true });
+		const reason = error instanceof Error ? error.message : String(error);
+		throw new BookkeepingFileError(
+			`Activated profile revision ${revision}, but could not update expected-revision in ${resolvedPath}: ${reason}`,
+		);
 	}
 }
 

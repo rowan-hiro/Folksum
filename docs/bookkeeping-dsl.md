@@ -105,9 +105,29 @@ fields, or both. Field values can be quoted text, `true`, `false`, or a safe
 integer. Date fields use quoted `YYYY-MM-DD` text. Rules are normalized and sorted
 by descending priority, then ID, by the existing profile validator.
 
-Version 1 intentionally exposes only case-insensitive `description contains`
-matching. Amount thresholds, participant inference, shortcuts, and richer boolean
-conditions require future public language additions rather than private code.
+Version 1 match predicates are `description contains`, exact-money `amount`
+bounds, `amountPerPerson` with an explicit participant count, and boolean
+`all` / `any` / `not` composition. Nested `all` / `any` / `not` blocks are
+allowed inside a rule. Capture shortcuts expand into structured capture input:
+
+```text
+shortcut transit.bus {
+  label "Bus"
+  kind expense
+  description "巴士"
+  amount "5.00"
+  category expense.transport
+}
+
+rule taxi.shared {
+  priority 250
+  when expense all {
+    description contains "的士"
+    amountPerPerson 2 gte "50"
+  }
+  category expense.transport.taxi
+}
+```
 
 ## Declarative exports
 
@@ -119,20 +139,25 @@ export daily.csv {
   reversals exclude
   amount-sign absolute
   delimiter ","
+  utf8-bom true
   category expense.food.coffee
   account "account-id-from-the-local-database"
   source agent
   source manual
-  column "Date" transaction.date
+  column "Date" transaction.date date-format dd/mm/yyyy
   column "Description" transaction.description
   column "Amount" posting.amount
+  column "Kind" literal "expense"
   column "Participant" customFields.participant
 }
 ```
 
 Required directives are `label`, `format`, `rows`, `reversals`, `amount-sign`,
 and at least one `column`. Repeat `category`, `account`, and `source` to build
-filters. CSV delimiters are comma, semicolon, or tab. Column sources use the same
+filters. CSV delimiters are comma, semicolon, or tab. Optional `utf8-bom true`
+prefixes CSV output. Columns may use a source, a `literal` string, an allowlisted
+`date-format`, and `amount-role` (`pnl`, `funding`, `debit`, or `credit`) for
+`transaction.amount` in transaction row mode. Column sources use the same
 allow-list as JSON profile exports; transaction row mode cannot select posting
 columns.
 

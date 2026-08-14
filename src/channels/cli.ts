@@ -15,6 +15,7 @@ import {
 	DEFAULT_BOOKKEEPING_DSL_PATH,
 	readBookkeepingDslFile,
 	readBookkeepingProfileFile,
+	rewriteBookkeepingDslExpectedRevision,
 	serializeBookkeepingProfileFile,
 	writeBookkeepingExportFile,
 	writeBookkeepingProfileFile,
@@ -363,6 +364,7 @@ function runProfileCommand(
 					categories: compiled.profile.categories.length,
 					customFields: compiled.profile.customFields.length,
 					categorizationRules: compiled.profile.categorizationRules.length,
+					captureShortcuts: compiled.profile.captureShortcuts?.length ?? 0,
 					exportProfiles: compiled.profile.exportProfiles.length,
 				}),
 			);
@@ -373,11 +375,14 @@ function runProfileCommand(
 			expectedRevision: compiled.document.expectedRevision,
 			source: "import",
 		});
+		const writtenPath = rewriteBookkeepingDslExpectedRevision(path, result.active.revision);
 		console.log(
 			JSON.stringify({
 				status: result.duplicate ? "unchanged" : "activated",
 				revision: result.active.revision,
 				profileHash: result.active.profileHash,
+				path: writtenPath,
+				expectedRevision: result.active.revision,
 			}),
 		);
 		return;
