@@ -74,6 +74,52 @@ test("bookkeeping profile tools expose the active revision and confirm typed pat
 	assert.equal(active.profile.customFields[0]?.id, "reimbursable");
 });
 
+test("bookkeeping profile tools explain matches without writing ledger rows", async (context) => {
+	const fixture = createFixture();
+	context.after(() => fixture.database.close());
+	const cash = fixture.wealth.createAccount({ name: "Cash", type: "asset" });
+	const dining = fixture.wealth.createAccount({ name: "Dining", type: "expense" });
+	fixture.profiles.patchProfile(fixture.scope, {
+		expectedRevision: 0,
+		patch: {
+			categories: {
+				upsert: [
+					{
+						id: "expense.food.dining",
+						label: "Dining",
+						kind: "expense",
+						parentId: "expense.food",
+						accountIds: { HKD: dining.id },
+					},
+				],
+			},
+			categorizationRules: {
+				upsert: [
+					{
+						id: "merchant.lunch",
+						priority: 10,
+						match: { transactionKind: "expense", descriptionContains: "lunch" },
+						assign: { categoryId: "expense.food.dining" },
+					},
+				],
+			},
+		},
+	});
+	const explain = fixture.tools.find((tool) => tool.name === "explain_bookkeeping_match");
+	assert.ok(explain);
+	const result = await explain.execute("explain", {
+		transactionKind: "expense",
+		description: "Team lunch",
+		amount: "38.50",
+		currency: "HKD",
+	});
+	const payload = toolJson(result);
+	assert.equal(payload.status, "executed");
+	assert.equal((payload.result as { categorizationRuleId?: string }).categorizationRuleId, "merchant.lunch");
+	assert.equal(fixture.wealth.listTransactions().length, 0);
+	assert.equal(cash.currency, "HKD");
+});
+
 test("bookkeeping profile tool confirmation fails closed after a concurrent revision change", async (context) => {
 	const fixture = createFixture();
 	context.after(() => fixture.database.close());

@@ -179,10 +179,10 @@ rules.
 Folksum provides a pinned `folksum/default@1` semantic profile. A household may
 activate complete, validated revisions containing category hierarchies,
 currency-specific category-to-account bindings, typed custom fields,
-deterministic description rules, and declarative export profiles. User profiles
-cannot add SQLite columns, redefine account types, introduce Finance IR kinds,
-or weaken exact-money, balance, currency, confirmation, idempotency, or reversal
-rules.
+deterministic categorization rules, channel-neutral capture shortcuts, and
+declarative export profiles. User profiles cannot add SQLite columns, redefine
+account types, introduce Finance IR mutation kinds, or weaken exact-money,
+balance, currency, confirmation, idempotency, or reversal rules.
 
 The active SQLite revision is the runtime source of truth. Revisions contain a
 normalized full profile, SHA-256 hash, author, source, and monotonically
@@ -200,22 +200,34 @@ code execution. `profile check-dsl` validates without mutation;
 `profile apply-dsl` explicitly activates the compiled full revision. Household
 values remain in the external DSL file rather than the public repository.
 
-Expense and income interpretation uses this precedence: an explicit category,
-the highest-priority matching categorization rule, then an account-binding
-lookup. Explicit custom-field values override rule assignments. Required fields,
-field types, category kind, household, currency, and account bindings are
-validated before a ledger write. The transaction stores the applied profile
-revision/hash, category id and label, matched rule, custom fields, and resolution
-source atomically with its postings. Idempotent retries retain the original
-snapshot; reversals copy it and identify reversal resolution rather than
-reclassifying against the current profile.
+Categorization rules keep `transactionKind` and exactly one predicate:
+`descriptionContains`, exact-money `amount` bounds, `amountPerPerson` bounds with
+an explicit participant count, or boolean `all` / `any` / `not` composition.
+Amount bounds are decimal strings and convert with the transaction currency at
+match time; per-person comparisons multiply threshold minor units by the
+participant count rather than dividing the amount. Capture shortcuts expand into
+description, amount, category, and field values before classification; explicit
+capture arguments override the shortcut. Expense and income interpretation then
+uses this precedence: an explicit category, the highest-priority matching rule,
+then an account-binding lookup. Explicit custom-field values override rule
+assignments. Required fields, field types, category kind, household, currency,
+and account bindings are validated before a ledger write. The transaction stores
+the applied profile revision/hash, category id and label, matched rule, custom
+fields, and resolution source atomically with its postings. Idempotent retries
+retain the original snapshot; reversals copy it and identify reversal resolution
+rather than reclassifying against the current profile. `explain_bookkeeping_match`
+is a read of the current profile and never writes explanation text onto ledger
+rows.
 
 Export profiles are a non-executable projection DSL. They select transaction or
 posting row mode, CSV or JSON, allow-listed columns, category/account/source
 filters, reversal handling, and an explicit debit/credit sign convention.
-Amounts are formatted directly from integer minor units. The model may request a
-bounded read-only preview, while arbitrary-path file writes remain available
-only through an explicit local CLI command.
+Transaction-row amounts may be taken from an allowlisted posting role (`pnl`,
+`funding`, `debit`, or `credit`). Columns may use a literal string instead of a
+source, an allowlisted date format, and an optional UTF-8 BOM. Amounts are
+formatted directly from integer minor units. The model may request a bounded
+read-only preview, while arbitrary-path file writes remain available only through
+an explicit local CLI command.
 
 ### 3.6 Pi dependency boundary
 
@@ -518,6 +530,10 @@ prices, and automatic price feeds are later extensions.
 | `record_asset_valuation` | yes | Store a dated total valuation |
 | `get_net_worth` | no | Calculate household net worth per currency |
 | `get_spending_summary` | no | Aggregate expense postings over a date range |
+| `get_bookkeeping_profile` | no | Read the active semantic profile revision |
+| `update_bookkeeping_profile` | yes | Patch categories, fields, rules, shortcuts, or export profiles |
+| `preview_bookkeeping_export` | no | Render a bounded read-only export preview |
+| `explain_bookkeeping_match` | no | Explain which current-profile rule would win |
 | `update_runtime_settings` | yes, non-financial | Persist and apply only provider, model, and thinking level |
 | `request_user_choice` | no, interaction only | Pause a supported channel turn for one bounded finite choice |
 

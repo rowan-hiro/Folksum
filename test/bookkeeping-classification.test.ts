@@ -323,3 +323,268 @@ test("bookkeeping classification supports income categories and account-binding 
 	assert.equal(posted.transaction.bookkeeping?.categoryId, "income.salary");
 	assert.equal(posted.transaction.bookkeeping?.resolutionSource, "account_binding");
 });
+
+test("bookkeeping classification supports amount bounds, per-person thresholds, and boolean composition", (context) => {
+	const fixture = createFixture();
+	context.after(() => fixture.database.close());
+	const cash = fixture.wealth.createAccount({ name: "Cash", type: "asset" });
+	const dining = fixture.wealth.createAccount({ name: "Dining", type: "expense" });
+	const coffee = fixture.wealth.createAccount({ name: "Coffee", type: "expense" });
+	const taxi = fixture.wealth.createAccount({ name: "Taxi", type: "expense" });
+	fixture.profiles.patchProfile(fixture.scope, {
+		expectedRevision: 0,
+		patch: {
+			categories: {
+				upsert: [
+					{
+						id: "expense.food.dining",
+						label: "Dining",
+						kind: "expense",
+						parentId: "expense.food",
+						accountIds: { HKD: dining.id },
+					},
+					{
+						id: "expense.food.coffee",
+						label: "Coffee",
+						kind: "expense",
+						parentId: "expense.food",
+						accountIds: { HKD: coffee.id },
+					},
+					{
+						id: "expense.transport.taxi",
+						label: "Taxi",
+						kind: "expense",
+						parentId: "expense.transport",
+						accountIds: { HKD: taxi.id },
+					},
+				],
+			},
+			categorizationRules: {
+				upsert: [
+					{
+						id: "brand.starbucks",
+						priority: 300,
+						match: {
+							transactionKind: "expense",
+							all: [{ descriptionContains: "starbucks" }, { amount: { lte: "80.00" } }],
+						},
+						assign: { categoryId: "expense.food.coffee" },
+					},
+					{
+						id: "product.coffee",
+						priority: 200,
+						match: { transactionKind: "expense", descriptionContains: "coffee" },
+						assign: { categoryId: "expense.food.coffee" },
+					},
+					{
+						id: "scenario.shared-taxi",
+						priority: 150,
+						match: {
+							transactionKind: "expense",
+							all: [
+								{ descriptionContains: "taxi" },
+								{ amountPerPerson: { gte: "40.00", participantCount: 2 } },
+							],
+						},
+						assign: { categoryId: "expense.transport.taxi" },
+					},
+				],
+			},
+		},
+	});
+
+	const coffeePosted = executedTransaction(
+		fixture.application.submit(
+			withScope(fixture.scope, {
+				kind: "record_expense",
+				idempotencyKey: "composed-coffee",
+				payload: {
+					description: "Starbucks coffee",
+					amount: "42.00",
+					fundingAccountId: cash.id,
+				},
+			}),
+			fixture.scope,
+		),
+	);
+	assert.equal(coffeePosted.transaction.bookkeeping?.categorizationRuleId, "brand.starbucks");
+
+	const expensiveStarbucks = executedTransaction(
+		fixture.application.submit(
+			withScope(fixture.scope, {
+				kind: "record_expense",
+				idempotencyKey: "expensive-starbucks",
+				payload: {
+					description: "Starbucks coffee",
+					amount: "90.00",
+					fundingAccountId: cash.id,
+				},
+			}),
+			fixture.scope,
+		),
+	);
+	assert.equal(expensiveStarbucks.transaction.bookkeeping?.categorizationRuleId, "product.coffee");
+
+	const amountMiss = fixture.application.submit(
+		withScope(fixture.scope, {
+			kind: "explain_bookkeeping_match",
+			payload: {
+				transactionKind: "expense",
+				description: "Starbucks coffee",
+				amount: "90.00",
+				currency: "HKD",
+			},
+		}),
+		fixture.scope,
+	);
+	assert.equal(amountMiss.status, "executed");
+	const missed = amountMiss.result as {
+		categorizationRuleId?: string;
+		rejected: Array<{ ruleId: string; reason: string; path: string }>;
+	};
+	assert.equal(missed.categorizationRuleId, "product.coffee");
+	assert.equal(missed.rejected[0]?.ruleId, "brand.starbucks");
+	assert.equal(missed.rejected[0]?.reason, "amount");
+	assert.equal(missed.rejected[0]?.path, "all[1].amount");
+
+	const taxiPosted = executedTransaction(
+		fixture.application.submit(
+			withScope(fixture.scope, {
+				kind: "record_expense",
+				idempotencyKey: "shared-taxi",
+				payload: {
+					description: "Airport taxi",
+					amount: "80.00",
+					fundingAccountId: cash.id,
+				},
+			}),
+			fixture.scope,
+		),
+	);
+	assert.equal(taxiPosted.transaction.bookkeeping?.categorizationRuleId, "scenario.shared-taxi");
+
+	const cheapTaxi = executedTransaction(
+		fixture.application.submit(
+			withScope(fixture.scope, {
+				kind: "record_expense",
+				idempotencyKey: "cheap-taxi",
+				payload: {
+					description: "Airport taxi",
+					amount: "79.99",
+					expenseAccountId: dining.id,
+					fundingAccountId: cash.id,
+				},
+			}),
+			fixture.scope,
+		),
+	);
+	assert.equal(cheapTaxi.transaction.bookkeeping?.resolutionSource, "account_binding");
+	assert.equal(cheapTaxi.transaction.bookkeeping?.categorizationRuleId, undefined);
+});
+
+test("bookkeeping classification expands capture shortcuts and explains higher-priority misses", (context) => {
+	const fixture = createFixture();
+	context.after(() => fixture.database.close());
+	const cash = fixture.wealth.createAccount({ name: "Cash", type: "asset" });
+	const metro = fixture.wealth.createAccount({ name: "Metro", type: "expense" });
+	fixture.profiles.patchProfile(fixture.scope, {
+		expectedRevision: 0,
+		patch: {
+			categories: {
+				upsert: [
+					{
+						id: "expense.transport.metro",
+						label: "Metro",
+						kind: "expense",
+						parentId: "expense.transport",
+						accountIds: { HKD: metro.id },
+					},
+				],
+			},
+			captureShortcuts: {
+				upsert: [
+					{
+						id: "mtr",
+						label: "MTR",
+						transactionKind: "expense",
+						description: "MTR",
+						amount: "10.00",
+						categoryId: "expense.transport.metro",
+					},
+				],
+			},
+			categorizationRules: {
+				upsert: [
+					{
+						id: "brand.mtr",
+						priority: 300,
+						match: { transactionKind: "expense", descriptionContains: "mtr" },
+						assign: { categoryId: "expense.transport.metro" },
+					},
+					{
+						id: "product.metro",
+						priority: 200,
+						match: { transactionKind: "expense", descriptionContains: "metro" },
+						assign: { categoryId: "expense.transport.metro" },
+					},
+				],
+			},
+		},
+	});
+
+	const posted = executedTransaction(
+		fixture.application.submit(
+			withScope(fixture.scope, {
+				kind: "record_expense",
+				idempotencyKey: "shortcut-mtr",
+				payload: {
+					shortcutId: "mtr",
+					fundingAccountId: cash.id,
+				},
+			}),
+			fixture.scope,
+		),
+	);
+	assert.equal(posted.transaction.description, "MTR");
+	assert.equal(posted.transaction.bookkeeping?.categoryId, "expense.transport.metro");
+
+	const explanation = fixture.application.submit(
+		withScope(fixture.scope, {
+			kind: "explain_bookkeeping_match",
+			payload: {
+				transactionKind: "expense",
+				description: "MTR metro",
+				amount: "10.00",
+				currency: "HKD",
+			},
+		}),
+		fixture.scope,
+	);
+	assert.equal(explanation.status, "executed");
+	const explained = explanation.result as {
+		categorizationRuleId?: string;
+		winnerPath?: string;
+		rejected: Array<{ ruleId: string; reason: string }>;
+	};
+	assert.equal(explained.categorizationRuleId, "brand.mtr");
+	assert.equal(explained.winnerPath, "descriptionContains");
+	assert.deepEqual(explained.rejected, []);
+
+	const amountMiss = fixture.application.submit(
+		withScope(fixture.scope, {
+			kind: "explain_bookkeeping_match",
+			payload: {
+				transactionKind: "expense",
+				description: "coffee",
+				amount: "12.00",
+				currency: "HKD",
+			},
+		}),
+		fixture.scope,
+	);
+	assert.equal(amountMiss.status, "executed");
+	const missed = amountMiss.result as { rejected: Array<{ ruleId: string; reason: string }> };
+	assert.equal(missed.rejected[0]?.ruleId, "brand.mtr");
+	assert.equal(missed.rejected[0]?.reason, "descriptionContains");
+	assert.equal(missed.rejected[1]?.ruleId, "product.metro");
+});

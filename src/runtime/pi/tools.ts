@@ -36,21 +36,23 @@ interface CreateAccountParams {
 }
 
 interface RecordExpenseParams {
-	description: string;
-	amount: string;
+	description?: string;
+	amount?: string;
 	expenseAccountId?: string;
 	categoryId?: string;
 	customFields?: Record<string, string | boolean | number>;
+	shortcutId?: string;
 	fundingAccountId: string;
 	occurredAt?: string;
 }
 
 interface RecordIncomeParams {
-	description: string;
-	amount: string;
+	description?: string;
+	amount?: string;
 	incomeAccountId?: string;
 	categoryId?: string;
 	customFields?: Record<string, string | boolean | number>;
+	shortcutId?: string;
 	destinationAccountId: string;
 	occurredAt?: string;
 }
@@ -127,6 +129,17 @@ interface PreviewBookkeepingExportParams {
 	from: string;
 	to: string;
 	limit?: number;
+}
+
+interface ExplainBookkeepingMatchParams {
+	transactionKind: "expense" | "income";
+	description?: string;
+	amount?: string;
+	currency: string;
+	accountId?: string;
+	categoryId?: string;
+	customFields?: Record<string, string | boolean | number>;
+	shortcutId?: string;
 }
 
 export function createFinanceTools(options: CreateFinanceToolsOptions): AgentTool[] {
@@ -225,12 +238,50 @@ export function createFinanceTools(options: CreateFinanceToolsOptions): AgentToo
 		required: Type.Boolean(),
 		allowedValues: Type.Optional(Type.Array(Type.String())),
 	});
+	const amountBound = Type.Object({
+		eq: Type.Optional(Type.String()),
+		gte: Type.Optional(Type.String()),
+		gt: Type.Optional(Type.String()),
+		lte: Type.Optional(Type.String()),
+		lt: Type.Optional(Type.String()),
+	});
+	const rulePredicate = Type.Object({
+		descriptionContains: Type.Optional(Type.String()),
+		amount: Type.Optional(amountBound),
+		amountPerPerson: Type.Optional(
+			Type.Object({
+				eq: Type.Optional(Type.String()),
+				gte: Type.Optional(Type.String()),
+				gt: Type.Optional(Type.String()),
+				lte: Type.Optional(Type.String()),
+				lt: Type.Optional(Type.String()),
+				participantCount: Type.Integer({ minimum: 1 }),
+			}),
+		),
+		all: Type.Optional(Type.Array(Type.Record(Type.String(), Type.Unknown()))),
+		any: Type.Optional(Type.Array(Type.Record(Type.String(), Type.Unknown()))),
+		not: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+	});
 	const categorizationRuleDefinition = Type.Object({
 		id: Type.String(),
 		priority: Type.Integer({ minimum: 0, maximum: 100_000 }),
 		match: Type.Object({
 			transactionKind: Type.Union([Type.Literal("expense"), Type.Literal("income")]),
-			descriptionContains: Type.String(),
+			descriptionContains: Type.Optional(Type.String()),
+			amount: Type.Optional(amountBound),
+			amountPerPerson: Type.Optional(
+				Type.Object({
+					eq: Type.Optional(Type.String()),
+					gte: Type.Optional(Type.String()),
+					gt: Type.Optional(Type.String()),
+					lte: Type.Optional(Type.String()),
+					lt: Type.Optional(Type.String()),
+					participantCount: Type.Integer({ minimum: 1 }),
+				}),
+			),
+			all: Type.Optional(Type.Array(rulePredicate)),
+			any: Type.Optional(Type.Array(rulePredicate)),
+			not: Type.Optional(rulePredicate),
 		}),
 		assign: Type.Object({
 			categoryId: Type.Optional(Type.String()),
@@ -241,6 +292,17 @@ export function createFinanceTools(options: CreateFinanceToolsOptions): AgentToo
 				),
 			),
 		}),
+	});
+	const captureShortcutDefinition = Type.Object({
+		id: Type.String(),
+		label: Type.String(),
+		transactionKind: Type.Union([Type.Literal("expense"), Type.Literal("income")]),
+		description: Type.String(),
+		amount: Type.Optional(Type.String()),
+		categoryId: Type.Optional(Type.String()),
+		customFields: Type.Optional(
+			Type.Record(Type.String(), Type.Union([Type.String(), Type.Boolean(), Type.Integer()])),
+		),
 	});
 	const exportProfileDefinition = Type.Object({
 		id: Type.String(),
@@ -254,6 +316,7 @@ export function createFinanceTools(options: CreateFinanceToolsOptions): AgentToo
 			Type.Literal("absolute"),
 		]),
 		delimiter: Type.Optional(Type.Union([Type.Literal(","), Type.Literal(";"), Type.Literal("\t")])),
+		utf8Bom: Type.Optional(Type.Boolean()),
 		filters: Type.Optional(
 			Type.Object({
 				categoryIds: Type.Optional(Type.Array(Type.String())),
@@ -273,7 +336,23 @@ export function createFinanceTools(options: CreateFinanceToolsOptions): AgentToo
 		columns: Type.Array(
 			Type.Object({
 				header: Type.String(),
-				source: Type.String(),
+				source: Type.Optional(Type.String()),
+				literal: Type.Optional(Type.String()),
+				amountRole: Type.Optional(
+					Type.Union([
+						Type.Literal("pnl"),
+						Type.Literal("funding"),
+						Type.Literal("debit"),
+						Type.Literal("credit"),
+					]),
+				),
+				dateFormat: Type.Optional(
+					Type.Union([
+						Type.Literal("yyyy-mm-dd"),
+						Type.Literal("yyyy/mm/dd"),
+						Type.Literal("dd/mm/yyyy"),
+					]),
+				),
 			}),
 		),
 	});
@@ -315,6 +394,12 @@ export function createFinanceTools(options: CreateFinanceToolsOptions): AgentToo
 							remove: Type.Optional(Type.Array(Type.String())),
 						}),
 					),
+					captureShortcuts: Type.Optional(
+						Type.Object({
+							upsert: Type.Optional(Type.Array(captureShortcutDefinition)),
+							remove: Type.Optional(Type.Array(Type.String())),
+						}),
+					),
 					exportProfiles: Type.Optional(
 						Type.Object({
 							upsert: Type.Optional(Type.Array(exportProfileDefinition)),
@@ -343,6 +428,28 @@ export function createFinanceTools(options: CreateFinanceToolsOptions): AgentToo
 			async execute(_toolCallId, rawParams) {
 				const params = rawParams as PreviewBookkeepingExportParams;
 				return submit(read("preview_bookkeeping_export", params));
+			},
+		},
+		{
+			name: "explain_bookkeeping_match",
+			label: "Explain bookkeeping match",
+			description:
+				"Explain which current-profile categorization rule would win for a candidate expense or income, including higher-priority misses. This does not write a ledger row.",
+			parameters: Type.Object({
+				transactionKind: Type.Union([Type.Literal("expense"), Type.Literal("income")]),
+				description: Type.Optional(Type.String()),
+				amount: Type.Optional(Type.String({ description: "Plain decimal amount" })),
+				currency: Type.String({ description: "Three-letter currency code" }),
+				accountId: Type.Optional(Type.String()),
+				categoryId: Type.Optional(Type.String()),
+				customFields: Type.Optional(
+					Type.Record(Type.String(), Type.Union([Type.String(), Type.Boolean(), Type.Integer()])),
+				),
+				shortcutId: Type.Optional(Type.String()),
+			}),
+			async execute(_toolCallId, rawParams) {
+				const params = rawParams as ExplainBookkeepingMatchParams;
+				return submit(read("explain_bookkeeping_match", params));
 			},
 		},
 		{
@@ -393,8 +500,8 @@ export function createFinanceTools(options: CreateFinanceToolsOptions): AgentToo
 					? "Record an everyday expense against an expense account and an asset or credit-card ledger account."
 					: "Record an everyday ledger expense paid from an asset account. Credit-card obligations are tracked separately in lightweight mode.",
 			parameters: Type.Object({
-				description: Type.String(),
-				amount: Type.String({ description: "Plain decimal amount" }),
+				description: Type.Optional(Type.String()),
+				amount: Type.Optional(Type.String({ description: "Plain decimal amount" })),
 				expenseAccountId: Type.Optional(
 					Type.String({ description: "Explicit expense account id; optional when a bound category or rule resolves it" }),
 				),
@@ -402,6 +509,7 @@ export function createFinanceTools(options: CreateFinanceToolsOptions): AgentToo
 				customFields: Type.Optional(
 					Type.Record(Type.String(), Type.Union([Type.String(), Type.Boolean(), Type.Integer()])),
 				),
+				shortcutId: Type.Optional(Type.String({ description: "Profile capture shortcut id" })),
 				fundingAccountId: Type.String(),
 				occurredAt: Type.Optional(Type.String({ description: "YYYY-MM-DD or ISO timestamp" })),
 			}),
@@ -422,8 +530,8 @@ export function createFinanceTools(options: CreateFinanceToolsOptions): AgentToo
 			label: "Record income",
 			description: "Record income received into an asset account.",
 			parameters: Type.Object({
-				description: Type.String(),
-				amount: Type.String(),
+				description: Type.Optional(Type.String()),
+				amount: Type.Optional(Type.String()),
 				incomeAccountId: Type.Optional(
 					Type.String({ description: "Explicit income account id; optional when a bound category or rule resolves it" }),
 				),
@@ -431,6 +539,7 @@ export function createFinanceTools(options: CreateFinanceToolsOptions): AgentToo
 				customFields: Type.Optional(
 					Type.Record(Type.String(), Type.Union([Type.String(), Type.Boolean(), Type.Integer()])),
 				),
+				shortcutId: Type.Optional(Type.String({ description: "Profile capture shortcut id" })),
 				destinationAccountId: Type.String(),
 				occurredAt: Type.Optional(Type.String()),
 			}),

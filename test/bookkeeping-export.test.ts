@@ -288,3 +288,41 @@ test("bookkeeping export profile validation rejects executable, incompatible, an
 		/references unknown custom field "missing"/,
 	);
 });
+
+test("bookkeeping export projects transaction amounts from posting roles with literals, dates, and UTF-8 BOM", (context) => {
+	const fixture = createFixture();
+	context.after(() => fixture.database.close());
+	recordExpense(fixture, "coffee", "Coffee", "12.30", "alpha");
+	fixture.profiles.patchProfile(fixture.scope, {
+		expectedRevision: 1,
+		patch: {
+			exportProfiles: {
+				upsert: [
+					{
+						id: "icost.csv",
+						label: "iCost CSV",
+						format: "csv",
+						rowMode: "transactions",
+						reversals: "exclude",
+						amountSign: "absolute",
+						utf8Bom: true,
+						columns: [
+							{ header: "Date", source: "transaction.date", dateFormat: "dd/mm/yyyy" },
+							{ header: "Type", literal: "expense" },
+							{ header: "Amount", source: "transaction.amount", amountRole: "pnl" },
+							{ header: "Funding", source: "transaction.amount", amountRole: "funding" },
+						],
+					},
+				],
+			},
+		},
+	});
+	const artifact = fixture.exporter.render({
+		householdId: fixture.scope.householdId,
+		exportProfileId: "icost.csv",
+		from: "2026-08-12",
+		to: "2026-08-12",
+	});
+	assert.equal(artifact.content.startsWith("\uFEFF"), true);
+	assert.match(artifact.content, /12\/08\/2026,expense,12\.30,12\.30/);
+});

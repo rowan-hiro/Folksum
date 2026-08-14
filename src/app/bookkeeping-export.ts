@@ -1,12 +1,14 @@
 import {
 	BookkeepingProfileError,
 	BookkeepingProfileService,
+	type BookkeepingExportAmountRole,
 	type BookkeepingExportAmountSign,
-	type BookkeepingExportColumnSource,
+	type BookkeepingExportColumnDefinition,
+	type BookkeepingExportDateFormat,
 	type BookkeepingExportProfileDefinition,
 } from "./bookkeeping-profile.ts";
 import { formatDecimalAmount } from "../core/money.ts";
-import type { LedgerTransaction, Posting, TransactionCustomFieldValue } from "../core/types.ts";
+import type { AccountType, LedgerTransaction, Posting, TransactionCustomFieldValue } from "../core/types.ts";
 import { WealthService } from "../core/wealth-service.ts";
 
 export type BookkeepingExportCell = string | number | boolean | null;
@@ -86,7 +88,9 @@ export class BookkeepingExportService {
 		}
 
 		const contexts = this.buildContexts(this.wealth.listTransactionsInRange(from, to), exportProfile);
-		const allRows = contexts.map((context) => projectRow(context, exportProfile));
+		const allRows = contexts.map((context) =>
+			projectRow(context, exportProfile, (accountId) => this.wealth.getAccount(accountId).type),
+		);
 		const rows = limit === undefined ? allRows : allRows.slice(0, limit);
 		return {
 			exportProfileId,
@@ -152,19 +156,24 @@ export class BookkeepingExportService {
 function projectRow(
 	context: ExportRowContext,
 	exportProfile: BookkeepingExportProfileDefinition,
+	accountType: (accountId: string) => AccountType,
 ): BookkeepingExportRow {
 	const row: Record<string, BookkeepingExportCell> = {};
 	for (const column of exportProfile.columns) {
-		row[column.header] = readColumn(context, column.source, exportProfile.amountSign);
+		row[column.header] = readColumn(context, column, exportProfile.amountSign, accountType);
 	}
 	return row;
 }
 
 function readColumn(
 	context: ExportRowContext,
-	source: BookkeepingExportColumnSource,
+	column: BookkeepingExportColumnDefinition,
 	amountSign: BookkeepingExportAmountSign,
+	accountType: (accountId: string) => AccountType,
 ): BookkeepingExportCell {
+	if (column.literal !== undefined) return column.literal;
+	const source = column.source;
+	if (!source) throw new BookkeepingProfileError("Export column is missing a source.");
 	const { transaction, posting } = context;
 	if (source.startsWith("customFields.")) {
 		const fieldId = source.slice("customFields.".length);
@@ -176,11 +185,16 @@ function readColumn(
 		case "transaction.description":
 			return transaction.description;
 		case "transaction.occurredAt":
-			return transaction.occurredAt;
+			return formatExportTimestamp(transaction.occurredAt, column.dateFormat);
 		case "transaction.date":
-			return transaction.occurredAt.slice(0, 10);
+			return formatExportDate(transaction.occurredAt.slice(0, 10), column.dateFormat);
 		case "transaction.currency":
 			return transaction.currency;
+		case "transaction.amount": {
+			const selected = selectPostingByRole(transaction, column.amountRole, accountType);
+			if (!selected) return null;
+			return formatSignedAmount(selected.amountMinor, transaction.currency, amountSign);
+		}
 		case "transaction.source":
 			return transaction.source;
 		case "transaction.idempotencyKey":
@@ -203,20 +217,63 @@ function readColumn(
 			return requirePosting(posting, source).accountId;
 		case "posting.accountName":
 			return requirePosting(posting, source).accountName;
-		case "posting.amount": {
-			const selected = requirePosting(posting, source);
-			const amountMinor =
-				amountSign === "credit-positive"
-					? -selected.amountMinor
-					: amountSign === "absolute"
-						? Math.abs(selected.amountMinor)
-						: selected.amountMinor;
-			return formatDecimalAmount(amountMinor, transaction.currency);
-		}
+		case "posting.amount":
+			return formatSignedAmount(requirePosting(posting, source).amountMinor, transaction.currency, amountSign);
 		case "posting.memo":
 			return requirePosting(posting, source).memo ?? null;
 	}
 	throw new BookkeepingProfileError(`Unsupported export column source "${source}".`);
+}
+
+function formatSignedAmount(
+	amountMinor: number,
+	currency: string,
+	amountSign: BookkeepingExportAmountSign,
+): string {
+	const signed =
+		amountSign === "credit-positive"
+			? -amountMinor
+			: amountSign === "absolute"
+				? Math.abs(amountMinor)
+				: amountMinor;
+	return formatDecimalAmount(signed, currency);
+}
+
+function selectPostingByRole(
+	transaction: LedgerTransaction,
+	role: BookkeepingExportAmountRole | undefined,
+	accountType: (accountId: string) => AccountType,
+): Posting | undefined {
+	if (!role) return undefined;
+	const matches =
+		role === "pnl"
+			? transaction.postings.filter((posting) => {
+					const type = accountType(posting.accountId);
+					return type === "expense" || type === "income";
+				})
+			: role === "funding"
+				? transaction.postings.filter((posting) => {
+						const type = accountType(posting.accountId);
+						return type === "asset" || type === "liability";
+					})
+				: role === "debit"
+					? transaction.postings.filter((posting) => posting.amountMinor > 0)
+					: transaction.postings.filter((posting) => posting.amountMinor < 0);
+	return matches.length === 1 ? matches[0] : undefined;
+}
+
+function formatExportDate(date: string, format: BookkeepingExportDateFormat | undefined): string {
+	if (!format || format === "yyyy-mm-dd") return date;
+	const year = date.slice(0, 4);
+	const month = date.slice(5, 7);
+	const day = date.slice(8, 10);
+	if (format === "yyyy/mm/dd") return `${year}/${month}/${day}`;
+	return `${day}/${month}/${year}`;
+}
+
+function formatExportTimestamp(value: string, format: BookkeepingExportDateFormat | undefined): string {
+	if (!format) return value;
+	return formatExportDate(value.slice(0, 10), format);
 }
 
 function requirePosting(posting: Posting | undefined, source: string): Posting {
@@ -232,7 +289,10 @@ function renderRows(
 	rows: readonly BookkeepingExportRow[],
 	exportProfile: BookkeepingExportProfileDefinition,
 ): string {
-	if (exportProfile.format === "json") return `${JSON.stringify(rows, null, "\t")}\n`;
+	if (exportProfile.format === "json") {
+		const json = `${JSON.stringify(rows, null, "\t")}\n`;
+		return exportProfile.utf8Bom ? `\uFEFF${json}` : json;
+	}
 	const delimiter = exportProfile.delimiter ?? ",";
 	const headers = exportProfile.columns.map((column) => escapeCsv(column.header, delimiter)).join(delimiter);
 	const body = rows.map((row) =>
@@ -240,7 +300,8 @@ function renderRows(
 			.map((column) => escapeCsv(cellText(row[column.header]), delimiter))
 			.join(delimiter),
 	);
-	return `${[headers, ...body].join("\n")}\n`;
+	const csv = `${[headers, ...body].join("\n")}\n`;
+	return exportProfile.utf8Bom ? `\uFEFF${csv}` : csv;
 }
 
 function cellText(value: BookkeepingExportCell | undefined): string {
