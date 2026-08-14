@@ -129,11 +129,17 @@ integer. Date fields use quoted `YYYY-MM-DD` text. Rules are normalized and sort
 by descending priority, then ID, by the existing profile validator.
 
 Version 1 match predicates are `description contains`, exact-money `amount`
-bounds, `amountPerPerson` with an explicit participant count, and boolean
+bounds, `amount-per-person` with an explicit participant count, and boolean
 `all` / `any` / `not` composition. Nested `all` / `any` / `not` blocks are
 allowed inside a rule. Capture shortcuts expand into structured capture input:
 
 ```text
+category expense.transport.taxi {
+  label "Taxi"
+  kind expense
+  parent expense.transport
+}
+
 shortcut transit.bus {
   label "Bus"
   kind expense
@@ -146,7 +152,7 @@ rule taxi.shared {
   priority 250
   when expense all {
     description contains "的士"
-    amountPerPerson 2 gte "50"
+    amount-per-person 2 gte "50"
   }
   category expense.transport.taxi
 }

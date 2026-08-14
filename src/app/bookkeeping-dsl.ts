@@ -84,8 +84,7 @@ export function parseBookkeepingDsl(text: string, source = "bookkeeping DSL"): B
 	};
 
 	for (let index = 0; index < lines.length; index += 1) {
-		const line = lines[index];
-		if (!line) continue;
+		const line = lines[index]!;
 		const [command, ...rest] = line.tokens;
 		if (!command) continue;
 		if (command.value === "expected-revision") {
@@ -115,8 +114,7 @@ export function parseBookkeepingDsl(text: string, source = "bookkeeping DSL"): B
 			let closed = false;
 			let depth = 1;
 			for (index += 1; index < lines.length; index += 1) {
-				const blockLine = lines[index];
-				if (!blockLine) continue;
+				const blockLine = lines[index]!;
 				if (depth === 1 && tokensEqual(blockLine.tokens, ["}"])) {
 					closed = true;
 					break;
@@ -281,8 +279,7 @@ function parseRule(id: string, lines: SourceLine[], openingLine: SourceLine): Ca
 	let categoryId: string | undefined;
 	const fields: Record<string, CustomFieldValue> = {};
 	for (let index = 0; index < lines.length; index += 1) {
-		const line = lines[index];
-		if (!line) continue;
+		const line = lines[index]!;
 		const [directive, ...args] = line.tokens;
 		switch (directive?.value) {
 			case "priority":
@@ -504,9 +501,9 @@ function parsePredicate(
 		}
 		return { predicate: { descriptionContains: requireQuoted(tokens[2], line, "Description match") }, consumed: 1 };
 	}
-	if (head.value === "amountPerPerson") {
+	if (head.value === "amount-per-person") {
 		const participantCount = parseNonNegativeInteger(tokens[1], line);
-		if (participantCount < 1) fail("amountPerPerson participant count must be >= 1.", line);
+		if (participantCount < 1) fail("amount-per-person participant count must be >= 1.", line);
 		return {
 			predicate: { amountPerPerson: { participantCount, ...parseAmountBound(tokens.slice(2), line) } },
 			consumed: 1,
@@ -525,12 +522,7 @@ function parsePredicate(
 		let consumed = 1;
 		let cursor = index + 1;
 		while (cursor < lines.length) {
-			const innerLine = lines[cursor];
-			if (!innerLine) {
-				cursor += 1;
-				consumed += 1;
-				continue;
-			}
+			const innerLine = lines[cursor]!;
 			if (tokensEqual(innerLine.tokens, ["}"])) {
 				consumed += 1;
 				if (head.value === "not") {
@@ -635,7 +627,6 @@ function tokenizeLine(line: string, lineNumber: number): Token[] {
 				const character = line[index];
 				if (character === '"' && !escaped) break;
 				escaped = character === "\\" && !escaped;
-				if (character !== "\\") escaped = false;
 				index += 1;
 			}
 			if (index >= line.length) throw new BookkeepingDslError("Unterminated quoted string.", lineNumber);

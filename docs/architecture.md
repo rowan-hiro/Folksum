@@ -207,6 +207,10 @@ explicitly, and household values remain outside the public repository.
 Categorization rules keep `transactionKind` and exactly one predicate:
 `descriptionContains`, exact-money `amount` bounds, `amountPerPerson` bounds with
 an explicit participant count, or boolean `all` / `any` / `not` composition.
+The public text DSL spells the per-person predicate `amount-per-person` and
+compiles it to the camel-cased semantic IR property. Match explanations include
+at most 100 rejected-rule details plus the total rejected count and a truncation
+flag.
 Amount bounds are decimal strings and convert with the transaction currency at
 match time; per-person comparisons multiply threshold minor units by the
 participant count rather than dividing the amount. Capture shortcuts expand into

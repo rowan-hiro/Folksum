@@ -588,3 +588,33 @@ test("bookkeeping classification expands capture shortcuts and explains higher-p
 	assert.equal(missed.rejected[0]?.reason, "descriptionContains");
 	assert.equal(missed.rejected[1]?.ruleId, "product.metro");
 });
+
+test("bookkeeping match explanations bound rejected rule details", (context) => {
+	const fixture = createFixture();
+	context.after(() => fixture.database.close());
+	fixture.profiles.patchProfile(fixture.scope, {
+		expectedRevision: 0,
+		patch: {
+			categorizationRules: {
+				upsert: Array.from({ length: 105 }, (_, index) => ({
+					id: `miss.rule-${index.toString().padStart(3, "0")}`,
+					priority: 1_000 - index,
+					match: { transactionKind: "expense" as const, descriptionContains: `never-${index}` },
+					assign: { categoryId: "expense.other" },
+				})),
+			},
+		},
+	});
+
+	const explanation = fixture.profiles.explainMatch({
+		householdId: fixture.wealth.household.id,
+		transactionKind: "expense",
+		description: "Coffee",
+		amount: "12.00",
+		currency: "HKD",
+	});
+	assert.equal(explanation.rejected.length, 100);
+	assert.equal(explanation.totalRejectedRules, 105);
+	assert.equal(explanation.rejectedTruncated, true);
+	assert.equal(explanation.rejected[99]?.ruleId, "miss.rule-099");
+});
