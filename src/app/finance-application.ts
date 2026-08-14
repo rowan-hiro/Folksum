@@ -51,15 +51,16 @@ export class FinanceApplication {
 		this.assertScope(ir, scope);
 		const risk = getFinanceRisk(ir);
 		if (!isFinanceReadIr(ir) && this.policy.requiresConfirmation(ir, risk, scope)) {
-			if (risk !== "medium" && risk !== "high") throw new Error(`Invalid confirmation risk ${risk}.`);
-			const pending = this.confirmations.create(ir, risk);
+			if (risk === "none") throw new Error(`Invalid confirmation risk ${risk}.`);
+			const confirmationRisk = risk === "high" ? "high" : "medium";
+			const pending = this.confirmations.create(ir, confirmationRisk);
 			return {
 				status: "confirmation_required",
-				risk,
+				risk: confirmationRisk,
 				ir,
 				pendingOperation: pending.operation,
 				confirmationToken: pending.confirmationToken,
-				summary: summarizeFinanceIr(ir),
+				summary: this.summarizeFinanceIr(ir),
 			};
 		}
 		return { status: "executed", risk, ir, result: this.execute(ir, scope) };
@@ -192,6 +193,7 @@ export class FinanceApplication {
 			currency: funding.currency,
 			...(expenseAccountId ? { accountId: expenseAccountId } : {}),
 			...(capture.categoryId ? { categoryId: capture.categoryId } : {}),
+			...(shortcutId ? { shortcutId } : {}),
 			...(capture.customFields ? { customFields: capture.customFields } : {}),
 		});
 		return this.wealth.recordExpense(
@@ -242,6 +244,7 @@ export class FinanceApplication {
 			currency: destination.currency,
 			...(incomeAccountId ? { accountId: incomeAccountId } : {}),
 			...(capture.categoryId ? { categoryId: capture.categoryId } : {}),
+			...(shortcutId ? { shortcutId } : {}),
 			...(capture.customFields ? { customFields: capture.customFields } : {}),
 		});
 		return this.wealth.recordIncome(
@@ -276,6 +279,7 @@ export class FinanceApplication {
 			currency: ir.payload.currency,
 			...(ir.payload.accountId ? { accountId: ir.payload.accountId } : {}),
 			...(capture.categoryId ? { categoryId: capture.categoryId } : {}),
+			...(ir.payload.shortcutId ? { shortcutId: ir.payload.shortcutId } : {}),
 			...(capture.customFields ? { customFields: capture.customFields } : {}),
 		});
 	}
@@ -312,32 +316,55 @@ export class FinanceApplication {
 			...(input.customFields ? { customFields: input.customFields } : {}),
 		});
 	}
-}
 
-function summarizeFinanceIr(ir: FinanceIr): string {
-	switch (ir.kind) {
-		case "create_account":
-			return `Create ${ir.payload.type} account "${ir.payload.name}".`;
-		case "record_transfer":
-			return `Record transfer of ${ir.payload.amount}.`;
-		case "record_card_statement":
-			return `Record card statement of ${ir.payload.statementAmount} due ${ir.payload.dueDate}.`;
-		case "register_asset":
-			return `Register ${ir.payload.kind} asset.`;
-		case "record_asset_valuation":
-			return `Record asset valuation of ${ir.payload.amount} on ${ir.payload.valuedAt}.`;
-		case "update_bookkeeping_profile":
-			return `Update bookkeeping profile revision ${ir.payload.expectedRevision}.`;
-		case "reverse_transaction":
-			return `Reverse transaction ${ir.payload.transactionId}.`;
-		case "record_card_payment":
-			return `Record card payment of ${ir.payload.amount}.`;
-		case "record_expense":
-			return `Record expense of ${ir.payload.amount ?? "shortcut"}.`;
-		case "record_income":
-			return `Record income of ${ir.payload.amount ?? "shortcut"}.`;
-		default:
-			return `Execute ${ir.kind}.`;
+	private summarizeFinanceIr(ir: FinanceIr): string {
+		switch (ir.kind) {
+			case "create_account":
+				return `Create ${ir.payload.type} account "${ir.payload.name}".`;
+			case "record_transfer":
+				return `Record transfer of ${ir.payload.amount}.`;
+			case "record_card_statement":
+				return `Record card statement of ${ir.payload.statementAmount} due ${ir.payload.dueDate}.`;
+			case "register_asset":
+				return `Register ${ir.payload.kind} asset.`;
+			case "record_asset_valuation":
+				return `Record asset valuation of ${ir.payload.amount} on ${ir.payload.valuedAt}.`;
+			case "update_bookkeeping_profile":
+				return `Update bookkeeping profile revision ${ir.payload.expectedRevision}.`;
+			case "reverse_transaction":
+				return `Reverse transaction ${ir.payload.transactionId}.`;
+			case "record_card_payment":
+				return `Record card payment of ${ir.payload.amount}.`;
+			case "record_expense":
+				return `Record expense of ${this.summarizeCaptureAmount(ir)}.`;
+			case "record_income":
+				return `Record income of ${this.summarizeCaptureAmount(ir)}.`;
+			default:
+				return `Execute ${ir.kind}.`;
+		}
+	}
+
+	private summarizeCaptureAmount(
+		ir: Extract<FinanceIr, { kind: "record_expense" | "record_income" }>,
+	): string {
+		if (ir.payload.amount?.trim()) return ir.payload.amount.trim();
+		if (!ir.payload.shortcutId) {
+			throw new Error(
+				`${ir.kind === "record_expense" ? "Expense" : "Income"} description and amount are required.`,
+			);
+		}
+		const accountId =
+			ir.kind === "record_expense" ? ir.payload.fundingAccountId : ir.payload.destinationAccountId;
+		const currency = this.wealth.getAccount(accountId).currency;
+		return this.expandCapture({
+			householdId: ir.householdId,
+			transactionKind: ir.kind === "record_expense" ? "expense" : "income",
+			currency,
+			shortcutId: ir.payload.shortcutId,
+			...(ir.payload.description ? { description: ir.payload.description } : {}),
+			...(ir.payload.categoryId ? { categoryId: ir.payload.categoryId } : {}),
+			...(ir.payload.customFields ? { customFields: ir.payload.customFields } : {}),
+		}).amount;
 	}
 }
 

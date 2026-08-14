@@ -49,6 +49,7 @@ export const BOOKKEEPING_EXPORT_COLUMN_SOURCES = [
 	"bookkeeping.categoryId",
 	"bookkeeping.categoryLabel",
 	"bookkeeping.ruleId",
+	"bookkeeping.shortcutId",
 	"bookkeeping.resolutionSource",
 	"posting.id",
 	"posting.accountId",
@@ -209,6 +210,7 @@ export interface ResolveBookkeepingTransactionInput {
 	amount: string;
 	accountId?: string;
 	categoryId?: string;
+	shortcutId?: string;
 	customFields?: unknown;
 }
 
@@ -247,6 +249,7 @@ export interface BookkeepingMatchExplanation {
 	categoryId?: string;
 	categoryLabel?: string;
 	categorizationRuleId?: string;
+	shortcutId?: string;
 	winnerPath?: string;
 	rejected: readonly BookkeepingMatchRejectedRule[];
 	totalRejectedRules: number;
@@ -500,9 +503,7 @@ export class BookkeepingProfileService {
 		return {
 			description,
 			amount,
-			...(input.categoryId ?? shortcut.categoryId
-				? { categoryId: input.categoryId ?? shortcut.categoryId }
-				: {}),
+			...(input.categoryId ? { categoryId: input.categoryId } : {}),
 			...(Object.keys(customFields).length > 0 ? { customFields } : {}),
 		};
 	}
@@ -576,6 +577,7 @@ export class BookkeepingProfileService {
 				profileHash: active.profileHash,
 				...(category ? { categoryId: category.id, categoryLabel: category.label } : {}),
 				...(matchedRule ? { categorizationRuleId: matchedRule.id } : {}),
+				...(explanation.shortcutId ? { shortcutId: explanation.shortcutId } : {}),
 				customFields,
 				resolutionSource: explanation.resolutionSource,
 			},
@@ -605,9 +607,29 @@ export class BookkeepingProfileService {
 		const explicitCategoryId = input.categoryId
 			? requireIdentifier(input.categoryId, "Transaction categoryId")
 			: undefined;
+		const shortcutId = input.shortcutId
+			? requireIdentifier(input.shortcutId, "Capture shortcutId")
+			: undefined;
+		let shortcutCategoryId: string | undefined;
+		if (shortcutId) {
+			const shortcut = (active.profile.captureShortcuts ?? []).find((item) => item.id === shortcutId);
+			if (!shortcut) throw new BookkeepingProfileError(`Unknown capture shortcut "${shortcutId}".`);
+			if (shortcut.transactionKind !== input.transactionKind) {
+				throw new BookkeepingProfileError(
+					`Capture shortcut "${shortcutId}" cannot expand an ${input.transactionKind} transaction.`,
+				);
+			}
+			if (!explicitCategoryId && shortcut.categoryId) shortcutCategoryId = shortcut.categoryId;
+		}
 		let category = explicitCategoryId ? categoriesById.get(explicitCategoryId) : undefined;
 		if (explicitCategoryId && !category) {
 			throw new BookkeepingProfileError(`Unknown bookkeeping category "${explicitCategoryId}".`);
+		}
+		if (!category && shortcutCategoryId) {
+			category = categoriesById.get(shortcutCategoryId);
+			if (!category) {
+				throw new BookkeepingProfileError(`Unknown bookkeeping category "${shortcutCategoryId}".`);
+			}
 		}
 		if (!category && matchedRule?.assign.categoryId) {
 			category = categoriesById.get(matchedRule.assign.categoryId);
@@ -628,11 +650,13 @@ export class BookkeepingProfileService {
 		const accountId = explicitAccountId ?? category?.accountIds?.[currency];
 		const resolutionSource: Exclude<BookkeepingResolutionSource, "reversal"> = explicitCategoryId
 			? "explicit"
-			: matchedRule
-				? "rule"
-				: category
-					? "account_binding"
-					: "unclassified";
+			: shortcutCategoryId
+				? "shortcut"
+				: matchedRule
+					? "rule"
+					: category
+						? "account_binding"
+						: "unclassified";
 		return {
 			active,
 			currency,
@@ -643,6 +667,7 @@ export class BookkeepingProfileService {
 				resolutionSource,
 				...(category ? { categoryId: category.id, categoryLabel: category.label } : {}),
 				...(matchedRule ? { categorizationRuleId: matchedRule.id } : {}),
+				...(shortcutId ? { shortcutId } : {}),
 				...(winnerPath ? { winnerPath } : {}),
 				rejected,
 				totalRejectedRules,
@@ -1541,7 +1566,10 @@ function validateRulePredicate(
 		throw new BookkeepingProfileError(`${label} exceeds the maximum of ${MAX_PREDICATE_NODES} match nodes.`);
 	}
 	const record = requireRecord(value, label);
-	requireOnlyKeys(record, ["transactionKind", ...PREDICATE_KEYS], label);
+	if (depth > 1 && record.transactionKind !== undefined) {
+		throw new BookkeepingProfileError(`${label} transactionKind is only allowed on the root match.`);
+	}
+	requireOnlyKeys(record, depth === 1 ? ["transactionKind", ...PREDICATE_KEYS] : PREDICATE_KEYS, label);
 	const present = PREDICATE_KEYS.filter((key) => record[key] !== undefined);
 	if (present.length !== 1) {
 		throw new BookkeepingProfileError(

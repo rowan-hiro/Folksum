@@ -374,6 +374,25 @@ test("bookkeeping profile validates match composition, amount bounds, and captur
 			}),
 		/eq cannot be combined with other bounds/,
 	);
+	assert.throws(
+		() =>
+			applyBookkeepingProfilePatch(profile, {
+				categorizationRules: {
+					upsert: [
+						{
+							id: "nested-kind",
+							priority: 1,
+							match: {
+								transactionKind: "expense",
+								all: [{ transactionKind: "income", descriptionContains: "x" } as never],
+							},
+							assign: { categoryId: "expense.food" },
+						},
+					],
+				},
+			}),
+		/transactionKind is only allowed on the root match/,
+	);
 	const withShortcut = applyBookkeepingProfilePatch(profile, {
 		captureShortcuts: {
 			upsert: [

@@ -695,6 +695,75 @@ test("bookkeeping classification expands capture shortcuts and explains higher-p
 	);
 	assert.equal(posted.transaction.description, "MTR");
 	assert.equal(posted.transaction.bookkeeping?.categoryId, "expense.transport.metro");
+	assert.equal(posted.transaction.bookkeeping?.resolutionSource, "shortcut");
+	assert.equal(posted.transaction.bookkeeping?.shortcutId, "mtr");
+
+	const overridden = executedTransaction(
+		fixture.application.submit(
+			withScope(fixture.scope, {
+				kind: "record_expense",
+				idempotencyKey: "shortcut-mtr-explicit",
+				payload: {
+					shortcutId: "mtr",
+					categoryId: "expense.transport.metro",
+					fundingAccountId: cash.id,
+				},
+			}),
+			fixture.scope,
+		),
+	);
+	assert.equal(overridden.transaction.bookkeeping?.resolutionSource, "explicit");
+	assert.equal(overridden.transaction.bookkeeping?.shortcutId, "mtr");
+
+	const reversal = fixture.wealth.reverseTransaction({
+		transactionId: posted.transaction.id,
+		occurredAt: "2026-08-13",
+		idempotencyKey: "reverse-shortcut-mtr",
+	});
+	assert.equal(reversal.transaction.bookkeeping?.resolutionSource, "reversal");
+	assert.equal(reversal.transaction.bookkeeping?.shortcutId, "mtr");
+	assert.equal(reversal.transaction.bookkeeping?.categoryId, "expense.transport.metro");
+
+	const confirming = new FinanceApplication(
+		fixture.wealth,
+		new ConfirmationStore(fixture.database),
+		{
+			requiresConfirmation(ir, risk) {
+				return ir.kind === "record_expense" || risk === "medium" || risk === "high";
+			},
+		},
+		fixture.profiles,
+	);
+	const proposed = confirming.submit(
+		withScope(fixture.scope, {
+			kind: "record_expense",
+			idempotencyKey: "confirm-shortcut-mtr",
+			payload: {
+				shortcutId: "mtr",
+				fundingAccountId: cash.id,
+			},
+		}),
+		fixture.scope,
+	);
+	assert.equal(proposed.status, "confirmation_required");
+	if (proposed.status !== "confirmation_required") throw new Error("Expected confirmation.");
+	assert.equal(proposed.risk, "medium");
+	assert.equal(proposed.summary, "Record expense of 10.00.");
+
+	const shortcutExplain = fixture.application.submit(
+		withScope(fixture.scope, {
+			kind: "explain_bookkeeping_match",
+			payload: {
+				transactionKind: "expense",
+				shortcutId: "mtr",
+				currency: "HKD",
+			},
+		}),
+		fixture.scope,
+	);
+	assert.equal(shortcutExplain.status, "executed");
+	assert.equal((shortcutExplain.result as { resolutionSource: string; shortcutId?: string }).resolutionSource, "shortcut");
+	assert.equal((shortcutExplain.result as { shortcutId?: string }).shortcutId, "mtr");
 
 	const explanation = fixture.application.submit(
 		withScope(fixture.scope, {

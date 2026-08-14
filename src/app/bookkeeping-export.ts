@@ -88,9 +88,15 @@ export class BookkeepingExportService {
 		}
 
 		const contexts = this.buildContexts(this.wealth.listTransactionsInRange(from, to), exportProfile);
-		const allRows = contexts.map((context) =>
-			projectRow(context, exportProfile, (accountId) => this.wealth.getAccount(accountId).type),
-		);
+		const accountTypes = new Map<string, AccountType>();
+		const accountType = (accountId: string): AccountType => {
+			const cached = accountTypes.get(accountId);
+			if (cached) return cached;
+			const type = this.wealth.getAccount(accountId).type;
+			accountTypes.set(accountId, type);
+			return type;
+		};
+		const allRows = contexts.map((context) => projectRow(context, exportProfile, accountType));
 		const rows = limit === undefined ? allRows : allRows.slice(0, limit);
 		return {
 			exportProfileId,
@@ -158,7 +164,7 @@ function projectRow(
 	exportProfile: BookkeepingExportProfileDefinition,
 	accountType: (accountId: string) => AccountType,
 ): BookkeepingExportRow {
-	const row: Record<string, BookkeepingExportCell> = {};
+	const row: Record<string, BookkeepingExportCell> = Object.create(null);
 	for (const column of exportProfile.columns) {
 		row[column.header] = readColumn(context, column, exportProfile.amountSign, accountType);
 	}
@@ -209,6 +215,8 @@ function readColumn(
 			return transaction.bookkeeping?.categoryLabel ?? null;
 		case "bookkeeping.ruleId":
 			return transaction.bookkeeping?.categorizationRuleId ?? null;
+		case "bookkeeping.shortcutId":
+			return transaction.bookkeeping?.shortcutId ?? null;
 		case "bookkeeping.resolutionSource":
 			return transaction.bookkeeping?.resolutionSource ?? null;
 		case "posting.id":
@@ -259,7 +267,12 @@ function selectPostingByRole(
 				: role === "debit"
 					? transaction.postings.filter((posting) => posting.amountMinor > 0)
 					: transaction.postings.filter((posting) => posting.amountMinor < 0);
-	return matches.length === 1 ? matches[0] : undefined;
+	if (matches.length > 1) {
+		throw new BookkeepingProfileError(
+			`Export amount role "${role}" is ambiguous because transaction "${transaction.id}" has ${matches.length} matching postings.`,
+		);
+	}
+	return matches[0];
 }
 
 function formatExportDate(date: string, format: BookkeepingExportDateFormat | undefined): string {

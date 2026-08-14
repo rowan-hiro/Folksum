@@ -3,7 +3,13 @@ import type { CardTrackingMode } from "./card-tracking.ts";
 export type AccountType = "asset" | "liability" | "income" | "expense" | "equity";
 export type TransactionSource = "agent" | "manual" | "import" | "system";
 export type TransactionCustomFieldValue = string | boolean | number;
-export type BookkeepingResolutionSource = "explicit" | "rule" | "account_binding" | "unclassified" | "reversal";
+export type BookkeepingResolutionSource =
+	| "explicit"
+	| "shortcut"
+	| "rule"
+	| "account_binding"
+	| "unclassified"
+	| "reversal";
 
 export interface Household {
 	id: string;
@@ -55,6 +61,7 @@ export interface RecordTransactionBookkeepingInput {
 	categoryId?: string;
 	categoryLabel?: string;
 	categorizationRuleId?: string;
+	shortcutId?: string;
 	customFields: Readonly<Record<string, TransactionCustomFieldValue>>;
 	resolutionSource: BookkeepingResolutionSource;
 }
