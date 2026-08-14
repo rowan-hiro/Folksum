@@ -249,6 +249,8 @@ export interface BookkeepingMatchExplanation {
 	categorizationRuleId?: string;
 	winnerPath?: string;
 	rejected: readonly BookkeepingMatchRejectedRule[];
+	totalRejectedRules: number;
+	rejectedTruncated: boolean;
 }
 
 export interface ActivateBookkeepingProfileResult {
@@ -296,6 +298,7 @@ const MAX_EXPORT_PROFILES = 100;
 const MAX_EXPORT_COLUMNS = 100;
 const MAX_PREDICATE_DEPTH = 8;
 const MAX_PREDICATE_NODES = 32;
+const MAX_EXPLAIN_REJECTED_RULES = 100;
 const PREDICATE_KEYS = ["descriptionContains", "amount", "amountPerPerson", "all", "any", "not"] as const;
 const AMOUNT_BOUND_KEYS = ["eq", "gte", "gt", "lte", "lt"] as const;
 
@@ -591,12 +594,13 @@ export class BookkeepingProfileService {
 			const reason = error instanceof Error ? error.message : String(error);
 			throw new BookkeepingProfileError(`Transaction amount is invalid for ${currency}: ${reason}`);
 		}
-		const { matchedRule, rejected, winnerPath } = matchCategorizationRules(active.profile.categorizationRules, {
-			transactionKind: input.transactionKind,
-			description: normalizedDescription,
-			amountMinor,
-			currency,
-		});
+		const { matchedRule, rejected, totalRejectedRules, rejectedTruncated, winnerPath } =
+			matchCategorizationRules(active.profile.categorizationRules, {
+				transactionKind: input.transactionKind,
+				description: normalizedDescription,
+				amountMinor,
+				currency,
+			});
 
 		const explicitCategoryId = input.categoryId
 			? requireIdentifier(input.categoryId, "Transaction categoryId")
@@ -641,6 +645,8 @@ export class BookkeepingProfileService {
 				...(matchedRule ? { categorizationRuleId: matchedRule.id } : {}),
 				...(winnerPath ? { winnerPath } : {}),
 				rejected,
+				totalRejectedRules,
+				rejectedTruncated,
 			},
 		};
 	}
@@ -1650,17 +1656,33 @@ function matchCategorizationRules(
 ): {
 	matchedRule?: CategorizationRuleDefinition;
 	rejected: BookkeepingMatchRejectedRule[];
+	totalRejectedRules: number;
+	rejectedTruncated: boolean;
 	winnerPath?: string;
 } {
 	const rejected: BookkeepingMatchRejectedRule[] = [];
+	let totalRejectedRules = 0;
 	for (const rule of rules) {
 		const result = evaluateRuleMatch(rule.match, context);
 		if (result.ok) {
-			return { matchedRule: rule, rejected, winnerPath: result.path };
+			return {
+				matchedRule: rule,
+				rejected,
+				totalRejectedRules,
+				rejectedTruncated: totalRejectedRules > rejected.length,
+				winnerPath: result.path,
+			};
 		}
-		rejected.push({ ruleId: rule.id, priority: rule.priority, reason: result.reason, path: result.path });
+		totalRejectedRules += 1;
+		if (rejected.length < MAX_EXPLAIN_REJECTED_RULES) {
+			rejected.push({ ruleId: rule.id, priority: rule.priority, reason: result.reason, path: result.path });
+		}
 	}
-	return { rejected };
+	return {
+		rejected,
+		totalRejectedRules,
+		rejectedTruncated: totalRejectedRules > rejected.length,
+	};
 }
 
 function evaluateRuleMatch(
@@ -1723,7 +1745,7 @@ function evaluatePredicate(
 		}
 		return { ok: false, reason: "any", path: path("any") };
 	}
-	return { ok: false, reason: "all", path: prefix || "match" };
+	throw new TypeError("Validated rule predicate has no supported operator.");
 }
 
 function amountOutcome(

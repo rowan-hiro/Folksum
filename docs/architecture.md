@@ -206,17 +206,20 @@ explicitly, and household values remain outside the public repository.
 
 Categorization rules keep `transactionKind` and exactly one predicate:
 `descriptionContains`, exact-money `amount` bounds, `amountPerPerson` bounds with
-an explicit participant count, or boolean `all` / `any` / `not` composition.
+an explicit participant count, or boolean `all` / `any` / `not` composition. The
+public text DSL spells the per-person predicate `amount-per-person` and compiles
+it to the camel-cased semantic IR property. Match explanations include at most
+100 rejected-rule details plus the total rejected count and a truncation flag.
 Amount bounds are decimal strings and convert with the transaction currency at
 match time; per-person comparisons multiply threshold minor units by the
 participant count rather than dividing the amount. A bound the transaction
 currency cannot express, because it carries more fractional digits than the
 currency scale or because the per-person product leaves the safe ledger range,
-never matches; the explanation reports it as `amountUnrepresentable` instead of an
-ordinary amount miss, so a rule that is silently inapplicable to a currency stays
-visible. Capture shortcuts expand into
-description, amount, category, and field values before classification; explicit
-capture arguments override the shortcut. Expense and income interpretation then
+never matches; the explanation reports it as `amountUnrepresentable` instead of
+an ordinary amount miss, so a rule that is silently inapplicable to a currency
+stays visible. Capture shortcuts expand into description, amount, category, and
+field values before classification; explicit capture arguments override the
+shortcut. Expense and income interpretation then
 uses this precedence: an explicit category, the highest-priority matching rule,
 then an account-binding lookup. Explicit custom-field values override rule
 assignments. Required fields, field types, category kind, household, currency,

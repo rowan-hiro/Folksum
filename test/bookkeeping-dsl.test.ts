@@ -183,7 +183,7 @@ rule taxi.shared {
   priority 250
   when expense all {
     description contains "的士"
-    amountPerPerson 2 gte "50"
+    amount-per-person 2 gte "50"
   }
   category expense.transport
 }
@@ -216,6 +216,10 @@ export household.csv {
 		transactionKind: "expense",
 		all: [{ descriptionContains: "的士" }, { amountPerPerson: { gte: "50", participantCount: 2 } }],
 	});
+	assert.throws(
+		() => parseBookkeepingDsl(COMPLETE_DSL.replace("description contains", "amountPerPerson 2 gte")),
+		/unexpected match predicate "amountPerPerson"/,
+	);
 	const exportProfile = profile.exportProfiles.find((item) => item.id === "household.csv");
 	assert.equal(exportProfile?.utf8Bom, true);
 	assert.deepEqual(exportProfile?.columns, [
