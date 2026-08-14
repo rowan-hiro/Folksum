@@ -8,8 +8,8 @@ It records expenses, income, transfers, credit-card statements and repayments,
 asset valuations, reminders, and net-worth reports. SQLite is the system of
 record; financial mutations are auditable and use a double-entry ledger.
 Households can activate revisioned semantic bookkeeping profiles for categories,
-typed fields, deterministic rules, and declarative exports without changing the
-physical ledger schema.
+typed fields, capture shortcuts, amount-aware categorization rules, and
+declarative exports without changing the physical ledger schema.
 
 The LLM is an interpretation layer, not the source of financial truth. The Pi
 runtime handles model interaction and tool calling, while application code owns
@@ -158,8 +158,10 @@ folksum members
 ```
 
 Bookkeeping profiles use revision-aware JSON documents or constrained DSL
-overlays. These commands inspect, export, validate, and explicitly apply them;
-data exports use a named declarative profile:
+overlays. Households can declare categories, typed fields, capture shortcuts,
+amount-aware categorization rules, and declarative exports. These commands
+inspect, export, validate, and explicitly apply them; data exports use a named
+declarative profile:
 
 ```sh
 folksum profile show
@@ -172,7 +174,8 @@ folksum export <profile-id> <from> <to> [output-path]
 
 Both profile and data export commands refuse to replace an existing file unless
 the user explicitly supplies `--force`. The model can inspect and propose profile
-patches and preview exports, but it cannot write local files.
+patches, preview exports, and explain rule matches, but it cannot write local
+files.
 
 Runtime configuration, in descending precedence:
 
