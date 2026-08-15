@@ -265,6 +265,57 @@ setTimeout(() => {}, 60_000);
 	await waitUntilExited(tree.descendant);
 });
 
+test(
+	"keeps the forced process-group kill armed after the direct child exits",
+	{ skip: process.platform === "win32" ? "Windows does not have a graceful process-tree signal" : false },
+	async (context) => {
+		const directory = createDirectory(context);
+		const pidPath = join(directory, "tree.json");
+		let tree: { child: number; descendant: number } | undefined;
+		context.after(() => {
+			if (!tree) return;
+			for (const pid of [tree.child, tree.descendant]) {
+				try {
+					process.kill(pid, "SIGKILL");
+				} catch {
+					// The expected path already terminated both processes.
+				}
+			}
+		});
+		const script = writeStubScript(
+			directory,
+			"parent-exits.mjs",
+			`import { spawn } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
+const descendant = spawn(
+	process.execPath,
+	["-e", "process.on('SIGTERM', () => {}); setTimeout(() => {}, 60_000);"],
+	{ stdio: "ignore" },
+);
+writeFileSync(${JSON.stringify(pidPath)}, JSON.stringify({ child: process.pid, descendant: descendant.pid }));
+readFileSync(0);
+setTimeout(() => {}, 60_000);
+`,
+		);
+
+		await assert.rejects(
+			() =>
+				new PythonVoiceTranscriber({
+					...stubOptions,
+					scriptPath: script,
+					timeoutMilliseconds: 1_000,
+					forcedKillMilliseconds: 2_000,
+				}).transcribe({ audio: new Uint8Array([1]) }),
+			(error: unknown) => error instanceof VoiceTranscriptionError && /timed out/.test(error.message),
+		);
+
+		tree = JSON.parse(readFileSync(pidPath, "utf8")) as { child: number; descendant: number };
+		await waitUntilExited(tree.child, 1_000);
+		assert.equal(isProcessAlive(tree.descendant), true, "the descendant must survive the graceful signal");
+		await waitUntilExited(tree.descendant);
+	},
+);
+
 /** Polls a condition so signal-driven behavior can be observed deterministically. */
 async function waitFor(
 	condition: () => boolean,
@@ -289,6 +340,15 @@ async function waitUntilExited(pid: number, timeoutMilliseconds = 10_000): Promi
 		}
 		if (Date.now() > deadline) throw new Error(`Process ${pid} survived the forced kill.`);
 		await new Promise((resolve) => setTimeout(resolve, 25));
+	}
+}
+
+function isProcessAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch {
+		return false;
 	}
 }
 

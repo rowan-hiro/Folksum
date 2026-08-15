@@ -162,8 +162,10 @@ export class PythonVoiceTranscriber implements VoiceTranscriber {
 			const terminate = (message: string): void => {
 				terminateTree(child, "SIGTERM");
 				if (!forcedTimer) {
-					forcedTimer = setTimeout(() => terminateTree(child, "SIGKILL"), this.forcedKillMilliseconds);
-					forcedTimer.unref?.();
+					forcedTimer = setTimeout(() => {
+						forcedTimer = undefined;
+						terminateTree(child, "SIGKILL");
+					}, this.forcedKillMilliseconds);
 				}
 				finish(new VoiceTranscriptionError(message));
 			};
@@ -199,7 +201,12 @@ export class PythonVoiceTranscriber implements VoiceTranscriber {
 				);
 			});
 			child.on("close", (code) => {
-				if (forcedTimer) clearTimeout(forcedTimer);
+				// `close` observes only the direct child. Keep escalation armed while
+				// another member of its process group is still alive.
+				if (forcedTimer && !hasLivingProcessTree(child)) {
+					clearTimeout(forcedTimer);
+					forcedTimer = undefined;
+				}
 				if (truncated) return;
 				if (code !== 0) {
 					const detail = summarizeDiagnostics(stderr);
@@ -297,10 +304,11 @@ export function createVoiceTranscriber(
  */
 function terminateTree(child: ChildProcess, signal: "SIGTERM" | "SIGKILL"): void {
 	const pid = child.pid;
-	if (pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
+	if (pid === undefined) return;
 
 	if (process.platform === "win32") {
-		if (signal === "SIGTERM") return; // Windows has no graceful tree signal; wait for the forced pass.
+		// Windows has no graceful process-tree signal. Start the forced tree kill
+		// immediately, while the root pid still identifies its descendants.
 		const killer = spawn("taskkill", ["/pid", String(pid), "/t", "/f"], { stdio: "ignore" });
 		killer.on("error", () => undefined);
 		return;
@@ -312,6 +320,28 @@ function terminateTree(child: ChildProcess, signal: "SIGTERM" | "SIGKILL"): void
 		// The group is already gone, or the child never became a group leader.
 		child.kill(signal);
 	}
+}
+
+/** Reports whether the child or another member of its process tree remains. */
+function hasLivingProcessTree(child: ChildProcess): boolean {
+	const pid = child.pid;
+	if (pid === undefined) return false;
+	if (process.platform === "win32") {
+		// `taskkill` is launched on the first termination pass and remains a
+		// referenced child until it has traversed the tree.
+		return child.exitCode === null && child.signalCode === null;
+	}
+
+	try {
+		process.kill(-pid, 0);
+		return true;
+	} catch (error) {
+		return !isMissingProcessError(error);
+	}
+}
+
+function isMissingProcessError(error: unknown): boolean {
+	return error instanceof Error && "code" in error && error.code === "ESRCH";
 }
 
 function childEnvironment(
