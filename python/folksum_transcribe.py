@@ -249,6 +249,23 @@ def build_request_body(*, model: str, audio: bytes, audio_format: str, language:
     }
 
 
+class RefuseRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuses every redirect so the Bearer key is never resent elsewhere.
+
+    Python's default handler follows 301/302/303/307 responses and copies the
+    request headers, including ``Authorization``, to the new location even when
+    that location is another host or plain HTTP. The request carries a provider
+    credential, so a redirect is treated as a hard failure instead.
+    """
+
+    def redirect_request(self, request, fp, code, message, headers, newurl):  # noqa: D102 - urllib hook.
+        raise TranscriptionError(
+            f"The transcription endpoint answered with an HTTP {code} redirect. "
+            "The request was not resent, so the API key was never forwarded. "
+            "Point the endpoint setting at the final URL instead."
+        )
+
+
 def post_json(endpoint: str, body: dict[str, object], api_key: str, timeout: float) -> dict[str, object]:
     request = urllib.request.Request(
         endpoint,
@@ -261,8 +278,9 @@ def post_json(endpoint: str, body: dict[str, object], api_key: str, timeout: flo
             "User-Agent": "folksum-voice/1",
         },
     )
+    opener = urllib.request.build_opener(RefuseRedirectHandler)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - HTTPS is enforced above.
+        with opener.open(request, timeout=timeout) as response:  # noqa: S310 - HTTPS is enforced above.
             raw = response.read(MAXIMUM_RESPONSE_BYTES + 1)
     except urllib.error.HTTPError as error:
         detail = error.read(MAXIMUM_RESPONSE_BYTES).decode("utf8", "replace")

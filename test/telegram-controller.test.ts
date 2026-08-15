@@ -270,7 +270,7 @@ test("transcribes allow-listed voice messages and reuses the ordinary text turn"
 	});
 
 	const transcriber = new FakeTranscriber();
-	const downloads: Array<{ fileId: string; maximumBytes: number }> = [];
+	const downloads: Array<{ fileId: string; maximumBytes: number; aborted: boolean }> = [];
 	const messenger = new FakeMessenger();
 	const controller = new TelegramChannelController({
 		botId: "9001",
@@ -281,8 +281,8 @@ test("transcribes allow-listed voice messages and reuses the ordinary text turn"
 		messenger,
 		voice: {
 			transcriber,
-			async download(input) {
-				downloads.push(input);
+			async download({ fileId, maximumBytes, signal }) {
+				downloads.push({ fileId, maximumBytes, aborted: signal.aborted });
 				return { audio: new Uint8Array([0x4f, 0x67, 0x67, 0x53]), mimeType: "application/octet-stream" };
 			},
 			maximumBytes: 1_024,
@@ -305,7 +305,7 @@ test("transcribes allow-listed voice messages and reuses the ordinary text turn"
 		await controller.handle(voiceUpdate("1", { mimeType: "audio/ogg", durationSeconds: 5, fileSizeBytes: 400 })),
 		{ status: "completed" },
 	);
-	assert.deepEqual(downloads, [{ fileId: "file-1", maximumBytes: 1_024 }]);
+	assert.deepEqual(downloads, [{ fileId: "file-1", maximumBytes: 1_024, aborted: false }]);
 	assert.equal(transcriber.calls.at(-1)?.mimeType, "audio/ogg");
 	assert.deepEqual(Array.from(transcriber.calls.at(-1)?.audio ?? []), [0x4f, 0x67, 0x67, 0x53]);
 	assert.equal(messenger.messages.at(-2)?.text, "Heard: coffee 42");
@@ -331,6 +331,85 @@ test("transcribes allow-listed voice messages and reuses the ordinary text turn"
 	assert.match(messenger.messages.at(-1)?.text ?? "", /looks like a provider credential/);
 	assert.doesNotMatch(messenger.messages.at(-1)?.text ?? "", /sk-proj-/);
 	assert.deepEqual(prompts, ["coffee 42"], "a credential-shaped transcript must never reach the model");
+
+	const sentBeforeLongTranscript = messenger.messages.length;
+	transcriber.results.push({ text: "x".repeat(2_001) });
+	await controller.handle(voiceUpdate("7"));
+	assert.match(messenger.messages.at(-1)?.text ?? "", /^The transcript was 2001 characters long; the limit is 2000\./);
+	assert.equal(
+		messenger.messages.length,
+		sentBeforeLongTranscript + 1,
+		"an oversized transcript must be refused, not echoed across many messages",
+	);
+	assert.deepEqual(prompts, ["coffee 42"], "an oversized transcript must never reach the model");
+});
+
+test("cancels an in-flight voice download when the channel stops", async (context) => {
+	const database = new WealthDatabase(":memory:");
+	context.after(() => database.close());
+	const wealth = new WealthService(database, { baseCurrency: "HKD" });
+	const identities = new SessionIdentityService(database);
+	const member = identities.createMember({
+		householdId: wealth.household.id,
+		displayName: "Owner",
+		role: "owner",
+		timezone: "UTC",
+	});
+	identities.bindChannelIdentity({ memberId: member.id, channel: "telegram", externalId: "101" });
+	const prompts: string[] = [];
+	const coordinator = new ConversationCoordinator({
+		identities,
+		application: new FinanceApplication(wealth, new ConfirmationStore(database)),
+		runtimeFactory: async () => ({
+			async prompt(text) {
+				prompts.push(text);
+			},
+			abort() {},
+		}),
+	});
+
+	const messenger = new FakeMessenger();
+	let observed: AbortSignal | undefined;
+	let started: (() => void) | undefined;
+	const downloadStarted = new Promise<void>((resolve) => {
+		started = resolve;
+	});
+	const controller = new TelegramChannelController({
+		botId: "9001",
+		config: { allowedChats: [{ chatId: "-1001" }], identities: [{ userId: "101", memberId: member.id }] },
+		coordinator,
+		actions: new ChannelActionRegistry(),
+		receipts: new ChannelUpdateReceiptStore(database),
+		messenger,
+		voice: {
+			transcriber: new FakeTranscriber(),
+			async download({ signal }) {
+				observed = signal;
+				started?.();
+				await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+				throw new Error("The voice download was cancelled.");
+			},
+		},
+	});
+
+	const pending = controller.handle({
+		kind: "voice",
+		updateId: "1",
+		userId: "101",
+		address: { chatId: "-1001" },
+		fileId: "file-1",
+	});
+	await downloadStarted;
+	assert.equal(observed?.aborted, false);
+	controller.stop();
+	assert.deepEqual(await pending, { status: "completed" });
+	assert.equal(observed?.aborted, true);
+	assert.equal(
+		messenger.messages.some((message) => /Voice transcription failed/.test(message.text)),
+		false,
+		"a cancelled download must not answer into a shutting-down channel",
+	);
+	assert.deepEqual(prompts, []);
 });
 
 test("keeps callback payloads short and safely chunks plain Telegram text", () => {

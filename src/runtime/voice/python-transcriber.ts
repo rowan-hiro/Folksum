@@ -57,6 +57,7 @@ export interface PythonVoiceTranscriberOptions {
 	command?: string;
 	scriptPath?: string;
 	timeoutMilliseconds?: number;
+	forcedKillMilliseconds?: number;
 	environment?: Readonly<Record<string, string | undefined>>;
 }
 
@@ -75,6 +76,7 @@ export class PythonVoiceTranscriber implements VoiceTranscriber {
 	private readonly command: string;
 	private readonly scriptPath: string;
 	private readonly timeoutMilliseconds: number;
+	private readonly forcedKillMilliseconds: number;
 	private readonly environment: Readonly<Record<string, string | undefined>>;
 
 	constructor(options: PythonVoiceTranscriberOptions) {
@@ -96,6 +98,7 @@ export class PythonVoiceTranscriber implements VoiceTranscriber {
 		this.command = (options.command ?? DEFAULT_VOICE_COMMAND).trim() || DEFAULT_VOICE_COMMAND;
 		this.scriptPath = options.scriptPath ?? defaultTranscriptionScriptPath();
 		this.timeoutMilliseconds = timeout;
+		this.forcedKillMilliseconds = options.forcedKillMilliseconds ?? FORCED_KILL_MILLISECONDS;
 		this.environment = options.environment ?? process.env;
 	}
 
@@ -140,16 +143,22 @@ export class PythonVoiceTranscriber implements VoiceTranscriber {
 				if (settled) return;
 				settled = true;
 				clearTimeout(timeoutTimer);
-				if (forcedTimer) clearTimeout(forcedTimer);
 				signal?.removeEventListener("abort", onAbort);
 				if (error) reject(error);
 				else resolve(value ?? "");
 			};
 
+			/**
+			 * Settles the caller immediately but keeps escalating to `SIGKILL`
+			 * until the child exits: a Python or ffmpeg process that ignores
+			 * `SIGTERM` must not survive a timeout or a cancellation.
+			 */
 			const terminate = (message: string): void => {
 				child.kill("SIGTERM");
-				forcedTimer = setTimeout(() => child.kill("SIGKILL"), FORCED_KILL_MILLISECONDS);
-				forcedTimer.unref?.();
+				if (!forcedTimer) {
+					forcedTimer = setTimeout(() => child.kill("SIGKILL"), this.forcedKillMilliseconds);
+					forcedTimer.unref?.();
+				}
 				finish(new VoiceTranscriptionError(message));
 			};
 
@@ -184,6 +193,7 @@ export class PythonVoiceTranscriber implements VoiceTranscriber {
 				);
 			});
 			child.on("close", (code) => {
+				if (forcedTimer) clearTimeout(forcedTimer);
 				if (truncated) return;
 				if (code !== 0) {
 					const detail = summarizeDiagnostics(stderr);

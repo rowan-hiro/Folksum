@@ -158,6 +158,7 @@ export async function runFolksumTelegram(input: RunFolksumTelegramInput): Promis
 		handle,
 		coordinator: input.coordinator,
 		actions: input.actions,
+		controller,
 		reminderTimer,
 		getReminderTask: () => reminderTask,
 	});
@@ -210,9 +211,13 @@ function createGrammyMessenger(bot: Bot): TelegramChannelMessenger {
 export function createTelegramVoiceDownloader(
 	bot: Pick<Bot, "api">,
 	botToken: string,
-): (input: { fileId: string; maximumBytes: number }) => Promise<TelegramVoiceDownload> {
-	return async ({ fileId, maximumBytes }) => {
-		const file = await bot.api.getFile(fileId).catch(() => {
+): (input: {
+	fileId: string;
+	maximumBytes: number;
+	signal: AbortSignal;
+}) => Promise<TelegramVoiceDownload> {
+	return async ({ fileId, maximumBytes, signal }) => {
+		const file = await bot.api.getFile(fileId, asGrammySignal(signal)).catch(() => {
 			throw new TelegramChannelError("Telegram refused to describe the voice file.");
 		});
 		if (!file.file_path) {
@@ -225,8 +230,9 @@ export function createTelegramVoiceDownloader(
 		const url = `${TELEGRAM_FILE_ROOT}/bot${botToken}/${file.file_path}`;
 		let response: Response;
 		try {
-			response = await fetch(url);
+			response = await fetch(url, { signal });
 		} catch {
+			if (signal.aborted) throw new TelegramChannelError("The voice download was cancelled.");
 			throw new TelegramChannelError("Could not reach the Telegram file API to download the voice message.");
 		}
 		if (!response.ok) {
@@ -237,6 +243,17 @@ export function createTelegramVoiceDownloader(
 		const mimeType = response.headers.get("content-type")?.split(";", 1)[0]?.trim();
 		return { audio, ...(mimeType ? { mimeType } : {}) };
 	};
+}
+
+type GrammyAbortSignal = NonNullable<Parameters<Bot["api"]["getFile"]>[1]>;
+
+/**
+ * `grammy` declares its cancellation parameter against the `abort-controller`
+ * polyfill types, while the runtime value is a standard `AbortSignal`. Only the
+ * declarations differ, so the conversion is confined to this helper.
+ */
+function asGrammySignal(signal: AbortSignal): GrammyAbortSignal {
+	return signal as unknown as GrammyAbortSignal;
 }
 
 async function readCappedBody(response: Response, maximumBytes: number): Promise<Uint8Array> {
@@ -332,6 +349,7 @@ export function createTelegramStopHandler(input: {
 	handle: { stop(): Promise<void> };
 	coordinator: { shutdown(): void };
 	actions: { clear(): void };
+	controller?: { stop(): void };
 	reminderTimer: NodeJS.Timeout;
 	getReminderTask: () => Promise<void>;
 	gracefulMilliseconds?: number;
@@ -347,12 +365,16 @@ export function createTelegramStopHandler(input: {
 				runnerStop,
 				input.gracefulMilliseconds ?? GRACEFUL_SHUTDOWN_MILLISECONDS,
 			);
-			if (!graceful) input.coordinator.shutdown();
+			if (!graceful) {
+				input.coordinator.shutdown();
+				input.controller?.stop();
+			}
 			await Promise.all([
 				settlesBefore(runnerStop, input.forcedMilliseconds ?? FORCED_SHUTDOWN_MILLISECONDS),
 				settlesBefore(input.getReminderTask(), input.forcedMilliseconds ?? FORCED_SHUTDOWN_MILLISECONDS),
 			]);
 			input.coordinator.shutdown();
+			input.controller?.stop();
 			input.actions.clear();
 		})();
 		return stopping;

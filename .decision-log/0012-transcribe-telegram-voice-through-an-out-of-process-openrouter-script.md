@@ -37,3 +37,12 @@ Add an opt-in voiceTranscription mode that stays off by default. When a househol
 * The transcription provider is swappable through endpoint and model settings without changing the finance domain.
 * Process isolation keeps audio and the transcription key out of the application's own network stack and memory, at the cost of one child process per voice message.
 * A local speech model remains a deferred extension that would restore the original boundary.
+
+## Decision History
+
+<!-- driftseal-reconciliation: be66cfb8-ef27-4ccd-ae27-c5ee214aa4ea -->
+### 2026-08-15T08:18:56.402Z — Intent `2026-08-15-004`
+
+Status: Accepted → Accepted
+
+Confirmed after the PR 4 review with four hardening changes that do not alter the decision: the transcription script now refuses redirects so the Bearer key is never resent to another host or to plain HTTP, the runtime keeps its SIGKILL fallback until the child exits, the Telegram controller owns a shutdown-scoped AbortController that cancels an in-flight download or transcription, and the provider-supplied transcript is bounded to 2000 characters before it is echoed or sent to the model.

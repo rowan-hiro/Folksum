@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -213,6 +213,50 @@ setTimeout(() => process.stdout.write("{}\\n"), 30_000);
 	);
 });
 
+test("escalates to SIGKILL when the child ignores SIGTERM", async (context) => {
+	const directory = createDirectory(context);
+	const pidPath = join(directory, "child.pid");
+	const script = writeStubScript(
+		directory,
+		"stubborn.mjs",
+		`import { readFileSync, writeFileSync } from "node:fs";
+process.on("SIGTERM", () => {});
+writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));
+readFileSync(0);
+setTimeout(() => {}, 60_000);
+`,
+	);
+
+	await assert.rejects(
+		() =>
+			new PythonVoiceTranscriber({
+				...stubOptions,
+				scriptPath: script,
+				timeoutMilliseconds: 1_000,
+				forcedKillMilliseconds: 200,
+			}).transcribe({ audio: new Uint8Array([1]) }),
+		(error: unknown) => error instanceof VoiceTranscriptionError && /timed out/.test(error.message),
+	);
+
+	const pid = Number(readFileSync(pidPath, "utf8").trim());
+	assert.ok(Number.isSafeInteger(pid) && pid > 0, "the stub child must have recorded its pid");
+	await waitUntilExited(pid);
+});
+
+/** Polls until the process is gone, so the test proves the SIGKILL landed. */
+async function waitUntilExited(pid: number, timeoutMilliseconds = 10_000): Promise<void> {
+	const deadline = Date.now() + timeoutMilliseconds;
+	for (;;) {
+		try {
+			process.kill(pid, 0);
+		} catch {
+			return;
+		}
+		if (Date.now() > deadline) throw new Error(`Process ${pid} survived the forced kill.`);
+		await new Promise((resolve) => setTimeout(resolve, 25));
+	}
+}
+
 test("rejects unusable transcriber configuration and script output", () => {
 	assert.throws(() => new PythonVoiceTranscriber({ apiKey: "  " }), VoiceTranscriptionError);
 	assert.throws(
@@ -326,6 +370,91 @@ test(
 );
 
 test(
+	"the bundled Python script refuses a redirect instead of forwarding the key",
+	{ skip: pythonCommand ? false : "python3 is not installed" },
+	() => {
+		const driver = `
+import json, sys, threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+sys.path.insert(0, ${JSON.stringify(dirname(defaultTranscriptionScriptPath()))})
+import folksum_transcribe as script
+
+forwarded = []
+
+
+class Destination(BaseHTTPRequestHandler):
+    def handle_any(self):
+        length = int(self.headers.get("content-length", 0))
+        self.rfile.read(length)
+        forwarded.append(self.headers.get("authorization"))
+        body = b"{}"
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    do_POST = handle_any
+    do_GET = handle_any
+
+    def log_message(self, *arguments):
+        pass
+
+
+destination = ThreadingHTTPServer(("127.0.0.1", 0), Destination)
+threading.Thread(target=destination.serve_forever, daemon=True).start()
+moved_to = "http://127.0.0.1:%d/moved" % destination.server_address[1]
+
+
+class Redirector(BaseHTTPRequestHandler):
+    def do_POST(self):
+        length = int(self.headers.get("content-length", 0))
+        self.rfile.read(length)
+        self.send_response(302)
+        self.send_header("location", moved_to)
+        self.send_header("content-length", "0")
+        self.end_headers()
+
+    def log_message(self, *arguments):
+        pass
+
+
+redirector = ThreadingHTTPServer(("127.0.0.1", 0), Redirector)
+threading.Thread(target=redirector.serve_forever, daemon=True).start()
+endpoint = "http://127.0.0.1:%d/api/v1/chat/completions" % redirector.server_address[1]
+
+body = script.build_request_body(model="vendor/model", audio=b"audio", audio_format="wav", language="")
+try:
+    script.post_json(endpoint, body, "test-voice-key", 10)
+    result = {"ok": True}
+except script.TranscriptionError as error:
+    result = {"ok": False, "error": script.redact(str(error), "test-voice-key")}
+except Exception as error:
+    result = {"ok": False, "error": "unexpected %r" % (error,)}
+result["forwarded"] = forwarded
+print(json.dumps(result))
+destination.shutdown()
+redirector.shutdown()
+`;
+		const child = spawnSync(pythonCommand ?? "python3", ["-c", driver], {
+			env: { PATH: process.env.PATH ?? "", PYTHONDONTWRITEBYTECODE: "1" },
+			encoding: "utf8",
+		});
+		assert.equal(child.status, 0, child.stderr);
+		const result = JSON.parse(child.stdout.trim().split("\n").at(-1) ?? "") as {
+			ok: boolean;
+			error?: string;
+			forwarded: Array<string | null>;
+		};
+		assert.equal(result.ok, false);
+		assert.match(String(result.error), /HTTP 302 redirect/);
+		assert.deepEqual(result.forwarded, [], "the redirect target must never receive the request");
+		assert.doesNotMatch(String(result.error), /test-voice-key/);
+	},
+);
+
+test(
 	"the bundled Python script rejects a plain-HTTP endpoint from its command line",
 	{ skip: pythonCommand ? false : "python3 is not installed" },
 	() => {
@@ -340,7 +469,11 @@ test(
 			],
 			{
 				input: Buffer.from(silentWav()),
-				env: { PATH: process.env.PATH ?? "", FOLKSUM_VOICE_API_KEY: "test-voice-key" },
+				env: {
+					PATH: process.env.PATH ?? "",
+					PYTHONDONTWRITEBYTECODE: "1",
+					FOLKSUM_VOICE_API_KEY: "test-voice-key",
+				},
 				encoding: "utf8",
 			},
 		);
@@ -419,7 +552,7 @@ server.shutdown()
 `;
 	const child = spawnSync(pythonCommand ?? "python3", ["-c", driver], {
 		input: Buffer.from(input.audio),
-		env: { PATH: input.path ?? process.env.PATH ?? "" },
+		env: { PATH: input.path ?? process.env.PATH ?? "", PYTHONDONTWRITEBYTECODE: "1" },
 		encoding: "buffer",
 	});
 	assert.equal(child.status, 0, child.stderr?.toString("utf8"));

@@ -136,11 +136,19 @@ output. The transcription key reaches only that child process's environment; it
 is never an argument, a JSON value, a database row, or model-visible text, and
 the child inherits no unrelated secrets.
 
-A transcript is not privileged input. It is echoed to the originating chat and
-then submitted through the same coordinator prompt as a typed message, so the
-credential-shaped-input check, confirmation policy, and Finance IR boundary all
-apply unchanged. Transcription failures, empty transcripts, and oversized audio
-produce plain channel messages and never a partial financial operation.
+The script refuses HTTP redirects rather than resending the credentialed request
+to a new location, so a redirecting endpoint can never move the key to another
+host or to plain HTTP. A child that ignores `SIGTERM` is escalated to `SIGKILL`,
+and a channel shutdown aborts an in-flight download or transcription so neither
+outlives the graceful deadline.
+
+A transcript is not privileged input. It is provider-supplied text, so it is
+bounded to an explicit character limit before anything else happens, then echoed
+to the originating chat and submitted through the same coordinator prompt as a
+typed message; the credential-shaped-input check, confirmation policy, and
+Finance IR boundary all apply unchanged. Transcription failures, empty
+transcripts, oversized audio, and oversized transcripts produce plain channel
+messages and never a partial financial operation.
 
 ### 3.2 Finance IR
 
@@ -686,6 +694,9 @@ deployment hardening.
   audio before downloading it, fails closed when the transcription script,
   converter, or endpoint is unavailable, and never bypasses the confirmation
   policy for a transcribed request.
+- The transcription credential is never resent through a redirect, a stuck
+  transcription child is force-killed, and shutdown cancels an in-flight voice
+  download or transcription instead of letting it reach a closed database.
 - Missing or stale valuations produce warnings, not fabricated estimates.
 - Missing provider credentials leave the TUI available for local login and
   settings, but prevent model prompts. They do not prevent reminder commands.

@@ -19,6 +19,8 @@ import {
 const TELEGRAM_TEXT_LIMIT = 4_000;
 const DEFAULT_VOICE_MAXIMUM_BYTES = 20 * 1024 * 1024;
 const DEFAULT_VOICE_MAXIMUM_SECONDS = 300;
+/** A spoken capture request is short; anything longer is a provider fault. */
+const MAXIMUM_TRANSCRIPT_CHARACTERS = 2_000;
 const VOICE_DISABLED_MESSAGE =
 	"Voice transcription is not enabled in this alpha. No audio was downloaded or sent to the model; please send the request as text.";
 
@@ -40,7 +42,11 @@ export interface TelegramVoiceDownload {
  */
 export interface TelegramVoiceSupport {
 	transcriber: VoiceTranscriber;
-	download(input: { fileId: string; maximumBytes: number }): Promise<TelegramVoiceDownload>;
+	download(input: {
+		fileId: string;
+		maximumBytes: number;
+		signal: AbortSignal;
+	}): Promise<TelegramVoiceDownload>;
 	maximumBytes?: number;
 	maximumDurationSeconds?: number;
 }
@@ -93,6 +99,7 @@ export class TelegramChannelController {
 	private readonly voice: TelegramVoiceSupport | undefined;
 	private readonly voiceMaximumBytes: number;
 	private readonly voiceMaximumSeconds: number;
+	private readonly shutdown = new AbortController();
 
 	constructor(input: {
 		botId: string;
@@ -118,6 +125,15 @@ export class TelegramChannelController {
 			input.voice?.maximumDurationSeconds ?? DEFAULT_VOICE_MAXIMUM_SECONDS,
 			"Telegram voice duration limit",
 		);
+	}
+
+	/**
+	 * Cancels channel-owned work that the conversation coordinator does not own,
+	 * so an in-flight voice download or transcription cannot outlive shutdown and
+	 * touch a closed database.
+	 */
+	stop(): void {
+		this.shutdown.abort();
 	}
 
 	async handle(update: TelegramInboundUpdate): Promise<TelegramUpdateResult> {
@@ -209,30 +225,43 @@ export class TelegramChannelController {
 		}
 
 		await this.messenger.sendTyping(update.address).catch(() => undefined);
+		const signal = this.shutdown.signal;
 		let transcript: string;
 		try {
 			const download = await voice.download({
 				fileId: update.fileId,
 				maximumBytes: this.voiceMaximumBytes,
+				signal,
 			});
 			const mimeType = update.mimeType?.trim() || download.mimeType?.trim();
-			const result = await voice.transcriber.transcribe({
-				audio: download.audio,
-				...(mimeType ? { mimeType } : {}),
-			});
+			const result = await voice.transcriber.transcribe(
+				{ audio: download.audio, ...(mimeType ? { mimeType } : {}) },
+				signal,
+			);
 			transcript = sanitizeTelegramText(result.text).trim();
 		} catch (error) {
+			// A shutdown already tore down the runtime; there is nobody left to answer.
+			if (signal.aborted) return;
 			await this.sendText(
 				update.address,
 				`Voice transcription failed: ${truncateTelegramText(describeVoiceFailure(error), 300)} You can send the request as text instead.`,
 			);
 			return;
 		}
+		if (signal.aborted) return;
 
 		if (!transcript) {
 			await this.sendText(
 				update.address,
 				"No speech was recognized in that voice message. Please try again or send the request as text.",
+			);
+			return;
+		}
+		// The transcript is provider-supplied text, not a trusted local value.
+		if (transcript.length > MAXIMUM_TRANSCRIPT_CHARACTERS) {
+			await this.sendText(
+				update.address,
+				`The transcript was ${transcript.length} characters long; the limit is ${MAXIMUM_TRANSCRIPT_CHARACTERS}. It was not sent to the model. Please send a shorter voice message or type the request.`,
 			);
 			return;
 		}

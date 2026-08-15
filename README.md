@@ -111,6 +111,11 @@ process with a reduced environment, so unrelated secrets such as the Telegram
 bot token are not inherited. Voice messages longer than 300 seconds or larger
 than 20 MB are refused before anything is downloaded.
 
+The endpoint must be the final URL: the script refuses redirects instead of
+resending the credentialed request elsewhere. A transcript longer than 2000
+characters is rejected rather than echoed or sent to the model, and stopping the
+bot cancels any download or transcription still in flight.
+
 The script requires Python 3 and only the standard library. Telegram sends
 voice messages as Ogg/Opus, which the OpenRouter audio input does not accept
 directly, so `ffmpeg` must be installed to convert them to WAV. Without it the
