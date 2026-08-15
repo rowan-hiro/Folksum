@@ -163,6 +163,17 @@ export class TelegramChannelController {
 			this.receipts.complete(claim.receipt.id);
 			return { status: "completed" };
 		} catch (error) {
+			// A shutdown tore the channel down mid-turn. Fail closed so redelivery
+			// cannot silently repeat half-finished work, and answer nobody: the
+			// runner is stopping and the database may already be closing.
+			if (this.shutdown.signal.aborted) {
+				try {
+					this.receipts.fail(claim.receipt.id, "Telegram shutdown cancelled this update.");
+				} catch {
+					// The database may already be closed; the process is going away.
+				}
+				return { status: "failed" };
+			}
 			if (error instanceof ConversationInputError || error instanceof ChannelActionError) {
 				await this.sendHandledError(update, error.message).catch(() => undefined);
 				this.receipts.complete(claim.receipt.id);
@@ -240,15 +251,15 @@ export class TelegramChannelController {
 			);
 			transcript = sanitizeTelegramText(result.text).trim();
 		} catch (error) {
-			// A shutdown already tore down the runtime; there is nobody left to answer.
-			if (signal.aborted) return;
+			// A shutdown cancelled the work; `handle` fails the receipt silently.
+			this.assertNotShuttingDown();
 			await this.sendText(
 				update.address,
 				`Voice transcription failed: ${truncateTelegramText(describeVoiceFailure(error), 300)} You can send the request as text instead.`,
 			);
 			return;
 		}
-		if (signal.aborted) return;
+		this.assertNotShuttingDown();
 
 		if (!transcript) {
 			await this.sendText(
@@ -274,8 +285,17 @@ export class TelegramChannelController {
 		}
 
 		await this.sendText(update.address, `Heard: ${transcript}`);
+		// The echo is awaited channel work, so shutdown may have started meanwhile;
+		// prompting now would fail inside the coordinator and answer into a closing
+		// channel.
+		this.assertNotShuttingDown();
 		await this.messenger.sendTyping(update.address).catch(() => undefined);
+		this.assertNotShuttingDown();
 		await this.renderTurn(update.address, await this.coordinator.prompt(scope, transcript));
+	}
+
+	private assertNotShuttingDown(): void {
+		if (this.shutdown.signal.aborted) throw new TelegramShutdownError();
 	}
 
 	private async processCallback(
@@ -425,6 +445,14 @@ function truncateTelegramText(value: string, maximumLength: number): string {
 
 function isHighSurrogate(value: number): boolean {
 	return value >= 0xd800 && value <= 0xdbff;
+}
+
+/** Marks a turn abandoned because the channel is shutting down. */
+class TelegramShutdownError extends Error {
+	constructor() {
+		super("The Telegram channel is shutting down.");
+		this.name = "TelegramShutdownError";
+	}
 }
 
 function describeVoiceFailure(error: unknown): string {

@@ -132,15 +132,26 @@ and size ceilings before the download, and passes the bytes to the application's
 channel-neutral `VoiceTranscriber`. The runtime implementation spawns the
 bundled standard-library Python script, which posts base64 audio to the
 configured HTTPS endpoint and returns exactly one JSON result on standard
-output. The transcription key reaches only that child process's environment; it
-is never an argument, a JSON value, a database row, or model-visible text, and
-the child inherits no unrelated secrets.
+output.
+
+The out-of-process design is a real but bounded boundary, and the distinction
+matters when reasoning about exposure. The application downloads the audio into
+its own memory and reads the key from the environment in order to start the
+child, so neither value is hidden from the application process. What the child
+provides is that the provider upload, the base64 encoding, and the ffmpeg
+conversion happen outside it. The credential guarantees are the durable ones:
+the key is never persisted to JSON or SQLite, never placed in an argument list
+that other local users can read from the process table, and never exposed to the
+model, and the child inherits no unrelated secrets such as the bot token.
 
 The script refuses HTTP redirects rather than resending the credentialed request
 to a new location, so a redirecting endpoint can never move the key to another
-host or to plain HTTP. A child that ignores `SIGTERM` is escalated to `SIGKILL`,
-and a channel shutdown aborts an in-flight download or transcription so neither
-outlives the graceful deadline.
+host or to plain HTTP. Termination reaches the whole child process group, so a
+converter the script started cannot outlive it holding the private temporary
+audio, and the script also turns a termination signal into an ordinary exception
+so that directory is removed. A channel shutdown aborts an in-flight download or
+transcription; a turn cancelled that way fails its update receipt closed and
+sends nothing into the closing channel.
 
 A transcript is not privileged input. It is provider-supplied text, so it is
 bounded to an explicit character limit before anything else happens, then echoed

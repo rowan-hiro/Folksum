@@ -402,14 +402,88 @@ test("cancels an in-flight voice download when the channel stops", async (contex
 	await downloadStarted;
 	assert.equal(observed?.aborted, false);
 	controller.stop();
-	assert.deepEqual(await pending, { status: "completed" });
+	assert.deepEqual(await pending, { status: "failed" }, "a cancelled turn must fail closed");
 	assert.equal(observed?.aborted, true);
-	assert.equal(
-		messenger.messages.some((message) => /Voice transcription failed/.test(message.text)),
-		false,
-		"a cancelled download must not answer into a shutting-down channel",
-	);
+	assert.deepEqual(messenger.messages, [], "a cancelled download must not answer into a shutting-down channel");
 	assert.deepEqual(prompts, []);
+	assert.equal(
+		(
+			database.connection
+				.prepare("SELECT status FROM channel_update_receipts WHERE channel = 'telegram'")
+				.get() as { status: string }
+		).status,
+		"failed",
+	);
+});
+
+test("stays silent when shutdown starts while the transcript is being echoed", async (context) => {
+	const database = new WealthDatabase(":memory:");
+	context.after(() => database.close());
+	const wealth = new WealthService(database, { baseCurrency: "HKD" });
+	const identities = new SessionIdentityService(database);
+	const member = identities.createMember({
+		householdId: wealth.household.id,
+		displayName: "Owner",
+		role: "owner",
+		timezone: "UTC",
+	});
+	identities.bindChannelIdentity({ memberId: member.id, channel: "telegram", externalId: "101" });
+	const prompts: string[] = [];
+	const coordinator = new ConversationCoordinator({
+		identities,
+		application: new FinanceApplication(wealth, new ConfirmationStore(database)),
+		runtimeFactory: async () => ({
+			async prompt(text) {
+				prompts.push(text);
+			},
+			abort() {},
+		}),
+	});
+
+	const transcriber = new FakeTranscriber();
+	transcriber.results.push({ text: "coffee 42" });
+	const messenger = new FakeMessenger();
+	let controller: TelegramChannelController | undefined;
+	// Shutdown lands exactly while the echo is in flight, which is the window the
+	// coordinator would otherwise turn into a generic failure response.
+	const echoing = new FakeMessenger();
+	Object.assign(messenger, {
+		async sendMessage(...parameters: Parameters<FakeMessenger["sendMessage"]>) {
+			await echoing.sendMessage(...parameters);
+			controller?.stop();
+		},
+	});
+	controller = new TelegramChannelController({
+		botId: "9001",
+		config: { allowedChats: [{ chatId: "-1001" }], identities: [{ userId: "101", memberId: member.id }] },
+		coordinator,
+		actions: new ChannelActionRegistry(),
+		receipts: new ChannelUpdateReceiptStore(database),
+		messenger,
+		voice: {
+			transcriber,
+			async download() {
+				return { audio: new Uint8Array([1, 2, 3]) };
+			},
+		},
+	});
+
+	assert.deepEqual(
+		await controller.handle({
+			kind: "voice",
+			updateId: "1",
+			userId: "101",
+			address: { chatId: "-1001" },
+			fileId: "file-1",
+		}),
+		{ status: "failed" },
+	);
+	assert.deepEqual(
+		echoing.messages.map((message) => message.text),
+		["Heard: coffee 42"],
+		"only the echo may have been sent before shutdown",
+	);
+	assert.deepEqual(prompts, [], "a cancelled turn must not reach the model");
 });
 
 test("keeps callback payloads short and safely chunks plain Telegram text", () => {

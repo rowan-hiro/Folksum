@@ -114,7 +114,12 @@ than 20 MB are refused before anything is downloaded.
 The endpoint must be the final URL: the script refuses redirects instead of
 resending the credentialed request elsewhere. A transcript longer than 2000
 characters is rejected rather than echoed or sent to the model, and stopping the
-bot cancels any download or transcription still in flight.
+bot cancels any download or transcription still in flight, including a converter
+the script had started.
+
+Running the upload out of process is not a memory boundary: Folksum downloads
+the audio and reads the key itself in order to start the child. What the key
+never does is reach JSON, SQLite, a command-line argument, or the model.
 
 The script requires Python 3 and only the standard library. Telegram sends
 voice messages as Ogg/Opus, which the OpenRouter audio input does not accept

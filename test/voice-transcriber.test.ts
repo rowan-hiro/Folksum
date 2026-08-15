@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -213,15 +222,23 @@ setTimeout(() => process.stdout.write("{}\\n"), 30_000);
 	);
 });
 
-test("escalates to SIGKILL when the child ignores SIGTERM", async (context) => {
+test("kills the whole process tree when the child ignores SIGTERM", async (context) => {
 	const directory = createDirectory(context);
-	const pidPath = join(directory, "child.pid");
+	const pidPath = join(directory, "tree.json");
+	// The grandchild stands in for the ffmpeg converter that the Python script
+	// starts: signalling only the direct child would leave it running.
 	const script = writeStubScript(
 		directory,
 		"stubborn.mjs",
-		`import { readFileSync, writeFileSync } from "node:fs";
+		`import { spawn } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
+const descendant = spawn(
+	process.execPath,
+	["-e", "process.on('SIGTERM', () => {}); setTimeout(() => {}, 60_000);"],
+	{ stdio: "ignore" },
+);
+writeFileSync(${JSON.stringify(pidPath)}, JSON.stringify({ child: process.pid, descendant: descendant.pid }));
 process.on("SIGTERM", () => {});
-writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));
 readFileSync(0);
 setTimeout(() => {}, 60_000);
 `,
@@ -238,10 +255,28 @@ setTimeout(() => {}, 60_000);
 		(error: unknown) => error instanceof VoiceTranscriptionError && /timed out/.test(error.message),
 	);
 
-	const pid = Number(readFileSync(pidPath, "utf8").trim());
-	assert.ok(Number.isSafeInteger(pid) && pid > 0, "the stub child must have recorded its pid");
-	await waitUntilExited(pid);
+	const tree = JSON.parse(readFileSync(pidPath, "utf8")) as { child: number; descendant: number };
+	assert.ok(Number.isSafeInteger(tree.child) && tree.child > 0, "the stub child must have recorded its pid");
+	assert.ok(
+		Number.isSafeInteger(tree.descendant) && tree.descendant > 0,
+		"the stub child must have recorded its descendant pid",
+	);
+	await waitUntilExited(tree.child);
+	await waitUntilExited(tree.descendant);
 });
+
+/** Polls a condition so signal-driven behavior can be observed deterministically. */
+async function waitFor(
+	condition: () => boolean,
+	message: string,
+	timeoutMilliseconds = 10_000,
+): Promise<void> {
+	const deadline = Date.now() + timeoutMilliseconds;
+	while (!condition()) {
+		if (Date.now() > deadline) throw new Error(message);
+		await new Promise((resolve) => setTimeout(resolve, 25));
+	}
+}
 
 /** Polls until the process is gone, so the test proves the SIGKILL landed. */
 async function waitUntilExited(pid: number, timeoutMilliseconds = 10_000): Promise<void> {
@@ -451,6 +486,79 @@ redirector.shutdown()
 		assert.match(String(result.error), /HTTP 302 redirect/);
 		assert.deepEqual(result.forwarded, [], "the redirect target must never receive the request");
 		assert.doesNotMatch(String(result.error), /test-voice-key/);
+	},
+);
+
+test(
+	"the bundled Python script stops its converter and removes the audio on SIGTERM",
+	{
+		skip: pythonCommand
+			? process.platform === "win32"
+				? "POSIX signals are not available on Windows"
+				: false
+			: "python3 is not installed",
+	},
+	async (context) => {
+		const directory = createDirectory(context);
+		const binaries = join(directory, "bin");
+		const temporary = join(directory, "tmp");
+		mkdirSync(binaries);
+		mkdirSync(temporary);
+		const marker = join(directory, "ffmpeg-started");
+		// A stand-in converter that hangs, so the test can interrupt mid-conversion.
+		const fakeBody = join(directory, "fake-ffmpeg.mjs");
+		writeFileSync(
+			fakeBody,
+			`import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(marker)}, "");
+setTimeout(() => {}, 60_000);
+`,
+		);
+		// Absolute paths only: the child PATH holds nothing but this directory.
+		const fakeFfmpeg = join(binaries, "ffmpeg");
+		writeFileSync(
+			fakeFfmpeg,
+			`#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(fakeBody)}\n`,
+			{ mode: 0o755 },
+		);
+
+		const child = spawn(
+			pythonCommand ?? "python3",
+			[
+				defaultTranscriptionScriptPath(),
+				"--endpoint",
+				"https://openrouter.example/api/v1/chat/completions",
+				"--model",
+				"vendor/model",
+				"--mime",
+				"audio/ogg",
+			],
+			{
+				env: {
+					PATH: binaries,
+					TMPDIR: temporary,
+					PYTHONDONTWRITEBYTECODE: "1",
+					FOLKSUM_VOICE_API_KEY: "test-voice-key",
+				},
+				stdio: ["pipe", "pipe", "pipe"],
+			},
+		);
+		context.after(() => {
+			child.kill("SIGKILL");
+		});
+		child.stdin.end(Buffer.from("OggS not really audio", "utf8"));
+
+		await waitFor(() => existsSync(marker), "the stand-in converter never started");
+		assert.equal(
+			readdirSync(temporary).some((entry) => entry.startsWith("folksum-voice-")),
+			true,
+			"the script must stage the audio in a private temporary directory",
+		);
+
+		child.kill("SIGTERM");
+		const [code] = (await once(child, "close")) as [number | null];
+		assert.equal(code, 0, "the script must exit cleanly after a termination signal");
+		assert.deepEqual(readdirSync(temporary), [], "the private temporary audio must not survive termination");
 	},
 );
 

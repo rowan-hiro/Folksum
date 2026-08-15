@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -64,9 +64,12 @@ export interface PythonVoiceTranscriberOptions {
 /**
  * Runs the bundled Python transcription script as a short-lived child process.
  *
- * The audio never reaches the Node process's own network stack and the API key
- * is passed only through the child environment, never through an argument list
- * that other local users could read from the process table.
+ * The application already holds the audio and the key in memory, so the child is
+ * not a memory boundary: what it buys is that the provider upload, the base64
+ * encoding, and the ffmpeg conversion run outside this process. The durable
+ * guarantee is how the key travels — through the child environment, never
+ * through an argument list that other local users could read from the process
+ * table, and never into persisted state or a model message.
  */
 export class PythonVoiceTranscriber implements VoiceTranscriber {
 	private readonly apiKey: string;
@@ -128,9 +131,12 @@ export class PythonVoiceTranscriber implements VoiceTranscriber {
 				return;
 			}
 
+			// A detached child leads its own process group, so a converter it
+			// starts can be signalled together with it.
 			const child = spawn(this.command, argv, {
 				stdio: ["pipe", "pipe", "pipe"],
 				env: { ...childEnvironment(this.environment), FOLKSUM_VOICE_API_KEY: this.apiKey },
+				detached: process.platform !== "win32",
 			});
 
 			let stdout = "";
@@ -150,13 +156,13 @@ export class PythonVoiceTranscriber implements VoiceTranscriber {
 
 			/**
 			 * Settles the caller immediately but keeps escalating to `SIGKILL`
-			 * until the child exits: a Python or ffmpeg process that ignores
+			 * until the tree exits: a Python or ffmpeg process that ignores
 			 * `SIGTERM` must not survive a timeout or a cancellation.
 			 */
 			const terminate = (message: string): void => {
-				child.kill("SIGTERM");
+				terminateTree(child, "SIGTERM");
 				if (!forcedTimer) {
-					forcedTimer = setTimeout(() => child.kill("SIGKILL"), this.forcedKillMilliseconds);
+					forcedTimer = setTimeout(() => terminateTree(child, "SIGKILL"), this.forcedKillMilliseconds);
 					forcedTimer.unref?.();
 				}
 				finish(new VoiceTranscriptionError(message));
@@ -279,6 +285,33 @@ export function createVoiceTranscriber(
 		...(settings.voiceLanguage ? { language: settings.voiceLanguage } : {}),
 		environment,
 	});
+}
+
+/**
+ * Signals the transcription child together with anything it started.
+ *
+ * The script runs `ffmpeg` through `subprocess.run`, so signalling the Python
+ * process alone can leave a converter holding the private temporary audio.
+ * POSIX children are spawned detached and therefore lead their own process
+ * group, which is signalled as a whole; Windows delegates to `taskkill /T`.
+ */
+function terminateTree(child: ChildProcess, signal: "SIGTERM" | "SIGKILL"): void {
+	const pid = child.pid;
+	if (pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
+
+	if (process.platform === "win32") {
+		if (signal === "SIGTERM") return; // Windows has no graceful tree signal; wait for the forced pass.
+		const killer = spawn("taskkill", ["/pid", String(pid), "/t", "/f"], { stdio: "ignore" });
+		killer.on("error", () => undefined);
+		return;
+	}
+
+	try {
+		process.kill(-pid, signal);
+	} catch {
+		// The group is already gone, or the child never became a group leader.
+		child.kill(signal);
+	}
 }
 
 function childEnvironment(

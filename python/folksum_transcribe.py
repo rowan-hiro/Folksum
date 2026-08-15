@@ -23,6 +23,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -48,7 +49,30 @@ class TranscriptionError(Exception):
     """A failure that must be reported to the caller as a JSON result."""
 
 
+def install_termination_handlers() -> None:
+    """Turns termination signals into an ordinary exception.
+
+    The default action would end the interpreter immediately, orphaning an
+    active ffmpeg conversion and leaving the private temporary audio directory
+    behind. Raising instead lets ``subprocess.run`` kill the converter and lets
+    ``TemporaryDirectory`` remove the audio before the process exits.
+    """
+
+    def handle(number: int, frame: object) -> None:  # noqa: ARG001 - signal hook.
+        raise TranscriptionError(f"The transcription process was terminated by signal {number}.")
+
+    for name in ("SIGTERM", "SIGINT", "SIGHUP"):
+        number = getattr(signal, name, None)
+        if number is None:
+            continue
+        try:
+            signal.signal(number, handle)
+        except (OSError, ValueError):  # Not the main thread, or unsupported here.
+            continue
+
+
 def main(argv: list[str]) -> int:
+    install_termination_handlers()
     parser = argparse.ArgumentParser(
         prog="folksum_transcribe",
         description="Transcribe audio from stdin through an OpenRouter endpoint.",
