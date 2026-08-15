@@ -14,6 +14,14 @@ import {
 	isCardTrackingMode,
 	type CardTrackingMode,
 } from "../core/card-tracking.ts";
+import {
+	DEFAULT_VOICE_COMMAND,
+	DEFAULT_VOICE_ENDPOINT,
+	DEFAULT_VOICE_MODEL,
+	isVoiceTranscriptionMode,
+	VOICE_TRANSCRIPTION_MODES,
+	type VoiceTranscriptionMode,
+} from "./voice-transcriber.ts";
 
 const DEFAULT_CONFIG_PATH = ".data/config.json";
 const FILE_KEYS = new Set([
@@ -28,6 +36,11 @@ const FILE_KEYS = new Set([
 	"model",
 	"thinkingLevel",
 	"cardTrackingMode",
+	"voiceTranscription",
+	"voiceModel",
+	"voiceEndpoint",
+	"voiceLanguage",
+	"voiceCommand",
 ]);
 
 const WRITABLE_SETTING_ENVIRONMENT_VARIABLES = {
@@ -73,6 +86,11 @@ export interface ApplicationConfig {
 	model?: string;
 	thinkingLevel: RuntimeThinkingLevel;
 	cardTrackingMode: CardTrackingMode;
+	voiceTranscription: VoiceTranscriptionMode;
+	voiceModel: string;
+	voiceEndpoint: string;
+	voiceCommand: string;
+	voiceLanguage?: string;
 }
 
 export interface LoadApplicationConfigOptions {
@@ -133,6 +151,26 @@ export function loadApplicationConfig(options: LoadApplicationConfigOptions = {}
 		);
 	}
 
+	const voiceTranscription = requiredString(
+		file,
+		"voiceTranscription",
+		env.FOLKSUM_VOICE_TRANSCRIPTION,
+		"off",
+	);
+	if (!isVoiceTranscriptionMode(voiceTranscription)) {
+		throw new ApplicationConfigError(
+			`Unsupported voice transcription mode "${voiceTranscription}". Use ${VOICE_TRANSCRIPTION_MODES.join(", ")}.`,
+		);
+	}
+	const voiceEndpoint = requiredString(
+		file,
+		"voiceEndpoint",
+		env.FOLKSUM_VOICE_ENDPOINT,
+		DEFAULT_VOICE_ENDPOINT,
+	);
+	assertHttpsEndpoint(voiceEndpoint);
+	const voiceLanguage = optionalString(file, "voiceLanguage", env.FOLKSUM_VOICE_LANGUAGE);
+
 	return {
 		configPath,
 		databasePath: requiredString(file, "databasePath", env.FOLKSUM_DB_PATH, ".data/wealth.db"),
@@ -146,6 +184,11 @@ export function loadApplicationConfig(options: LoadApplicationConfigOptions = {}
 		...(model ? { model } : {}),
 		thinkingLevel,
 		cardTrackingMode,
+		voiceTranscription,
+		voiceModel: requiredString(file, "voiceModel", env.FOLKSUM_VOICE_MODEL, DEFAULT_VOICE_MODEL),
+		voiceEndpoint,
+		voiceCommand: requiredString(file, "voiceCommand", env.FOLKSUM_VOICE_COMMAND, DEFAULT_VOICE_COMMAND),
+		...(voiceLanguage ? { voiceLanguage } : {}),
 	};
 }
 
@@ -290,6 +333,18 @@ function writeJsonAtomically(path: string, value: Record<string, unknown>): void
 	} catch (error) {
 		rmSync(temporaryPath, { force: true });
 		throw error;
+	}
+}
+
+function assertHttpsEndpoint(value: string): void {
+	let parsed: URL;
+	try {
+		parsed = new URL(value);
+	} catch {
+		throw new ApplicationConfigError(`Configuration value "voiceEndpoint" must be a valid URL.`);
+	}
+	if (parsed.protocol !== "https:") {
+		throw new ApplicationConfigError(`Configuration value "voiceEndpoint" must use HTTPS.`);
 	}
 }
 

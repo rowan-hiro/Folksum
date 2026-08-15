@@ -53,3 +53,10 @@ Implemented the accepted Telegram long-polling alpha with private allowlists and
 Status: Accepted → Accepted
 
 Confirmed after merging into the bookkeeping-profile branch: the Telegram long-polling adapter retains private allowlists, scoped single-use actions, durable at-most-once receipts, deterministic reminders, deferred voice handling, and application-owned Finance IR and confirmation boundaries.
+
+<!-- driftseal-reconciliation: c6cee055-9d7b-4753-83ac-d82e71b618a1 -->
+### 2026-08-15T04:08:58.078Z — Intent `2026-08-15-003`
+
+Status: Accepted → Accepted
+
+The Telegram alpha's deferred voice transcription is now an explicit opt-in capability rather than an absent one. Allowlists, identity binding, scoped single-use buttons, durable receipts, deterministic reminders, and the application-owned Finance IR and confirmation boundaries are unchanged; the adapter still downloads no audio while voiceTranscription is off. Decision 0012 records the transcription design and its privacy consequence.

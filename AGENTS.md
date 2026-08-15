@@ -49,6 +49,12 @@ surface, and acceptance criteria.
 - `src/runtime/pi/` is the narrow adapter to `pi-agent-core` and `pi-ai`. It also
   owns the non-secret runtime-settings controller and the user-scoped credential
   store. Keep provider-specific model behavior out of the finance domain.
+- `src/runtime/voice/` runs the bundled Python transcription script as a
+  short-lived child process. The finance domain sees only the channel-neutral
+  `VoiceTranscriber` interface in `src/app/voice-transcriber.ts`.
+- `python/folksum_transcribe.py` is the standard-library-only transcription
+  script. It reads audio from standard input, posts it to the configured
+  OpenRouter endpoint, and writes exactly one JSON result to standard output.
 - `test/` contains Node test-runner suites for the domain and runtime boundary.
 - `.intent-log/` and `.decision-log/` contain DriftSeal records and must be
   committed with the changes they describe.
@@ -141,8 +147,17 @@ pass the bot token only through the environment:
 FOLKSUM_TELEGRAM_BOT_TOKEN=<bot-token> npm run telegram
 ```
 
-The process refuses to replace an active webhook. Voice messages are not
-downloaded or transcribed in this alpha.
+The process refuses to replace an active webhook. Voice transcription is opt-in
+and disabled by default: while `voiceTranscription` is `off` no voice file is
+downloaded. Setting it to `openrouter` downloads an allow-listed voice message
+and passes the audio to the bundled Python script `python/folksum_transcribe.py`,
+which posts it to the configured OpenRouter endpoint and returns the transcript
+on standard output. The transcript is echoed to the chat and then handled as an
+ordinary text turn, so confirmation policy, Finance IR, and the
+credential-shaped-input check still apply. The transcription key is accepted
+only through `FOLKSUM_VOICE_API_KEY`, never through JSON, SQLite, a command-line
+argument, or the model. The script needs Python 3 with only the standard
+library, plus `ffmpeg` to convert Telegram's Ogg/Opus audio to WAV.
 
 Common settings are loaded from `.data/config.json` when it exists. Set
 `FOLKSUM_CONFIG_PATH` to use another JSON file; a relative path is resolved from the
@@ -204,6 +219,12 @@ Runtime configuration, in descending precedence:
 | `FOLKSUM_AUTH_PATH` | none | `~/.folksum/auth.json` | User-scoped provider credential file |
 | `FOLKSUM_TELEGRAM_CONFIG_PATH` | none | `.data/telegram.json` | Private Telegram chat/user/member mapping |
 | `FOLKSUM_TELEGRAM_BOT_TOKEN` | none | none | Environment-only Telegram bot credential |
+| `FOLKSUM_VOICE_TRANSCRIPTION` | `voiceTranscription` | `off` | Voice transcription mode: `off` or `openrouter` |
+| `FOLKSUM_VOICE_MODEL` | `voiceModel` | `google/gemini-2.5-flash` | Audio-capable model used for transcription |
+| `FOLKSUM_VOICE_ENDPOINT` | `voiceEndpoint` | `https://openrouter.ai/api/v1/chat/completions` | HTTPS transcription endpoint |
+| `FOLKSUM_VOICE_LANGUAGE` | `voiceLanguage` | none | Optional BCP 47 language hint |
+| `FOLKSUM_VOICE_COMMAND` | `voiceCommand` | `python3` | Interpreter used to run the transcription script |
+| `FOLKSUM_VOICE_API_KEY` | none | none | Environment-only transcription credential |
 
 <!-- driftseal -->
 <!-- driftseal-version: 11 -->
