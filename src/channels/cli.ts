@@ -21,6 +21,7 @@ import {
 } from "../app/bookkeeping-files.ts";
 import { ConfirmationStore } from "../app/confirmation.ts";
 import { FinanceApplication } from "../app/finance-application.ts";
+import type { HouseholdRole } from "../app/identity.ts";
 import { containsLikelyCredential } from "../app/input-security.ts";
 import { MemoryRuleService } from "../app/memory.ts";
 import { NotificationOutbox, ReminderScheduler } from "../app/scheduler.ts";
@@ -69,7 +70,7 @@ try {
 	} else if (command === "export") {
 		runExportCommand(exporter, scope.householdId, process.argv.slice(3));
 	} else if (command === "members") {
-		console.log(JSON.stringify(identities.listMembers(wealth.household.id), null, 2));
+		runMembersCommand(identities, wealth, config, process.argv.slice(3));
 	} else if (command === "tui") {
 		const { models, settingsController } = createModelServices(config);
 		await runFolksumTui({
@@ -304,6 +305,61 @@ function printReminders(reminders: ReturnType<WealthService["listCardReminders"]
 			`- ${reminder.cardAccountName}: ${reminder.currency} ${reminder.outstandingAmount}, due ${reminder.dueDate} (${reminder.status})`,
 		);
 	}
+}
+
+const MEMBERS_USAGE =
+	"Usage: folksum members [list] | add --name <display-name> [--role owner|member|viewer] [--timezone <iana-timezone>]";
+
+function runMembersCommand(
+	identities: SessionIdentityService,
+	wealth: WealthService,
+	config: ApplicationConfig,
+	args: string[],
+): void {
+	const action = args[0] ?? "list";
+	if (action === "list") {
+		if (args.length > 1) throw new Error(MEMBERS_USAGE);
+		console.log(JSON.stringify(identities.listMembers(wealth.household.id), null, 2));
+		return;
+	}
+	if (action === "add") {
+		const options = parseMemberAddOptions(args.slice(1));
+		const member = identities.createMember({
+			householdId: wealth.household.id,
+			displayName: options.name,
+			role: options.role,
+			timezone: options.timezone ?? config.timezone,
+		});
+		console.log(JSON.stringify({ status: "created", member }, null, 2));
+		return;
+	}
+	throw new Error(MEMBERS_USAGE);
+}
+
+function parseMemberAddOptions(args: string[]): { name: string; role: HouseholdRole; timezone: string | undefined } {
+	let name: string | undefined;
+	let role: HouseholdRole = "member";
+	let timezone: string | undefined;
+	for (let index = 0; index < args.length; index += 1) {
+		const flag = args[index];
+		const value = args[index + 1];
+		if (!value || value.startsWith("--")) throw new Error(MEMBERS_USAGE);
+		if (flag === "--name") {
+			name = value;
+		} else if (flag === "--role") {
+			if (value !== "owner" && value !== "member" && value !== "viewer") {
+				throw new Error(`Invalid member role "${value}". ${MEMBERS_USAGE}`);
+			}
+			role = value;
+		} else if (flag === "--timezone") {
+			timezone = value;
+		} else {
+			throw new Error(MEMBERS_USAGE);
+		}
+		index += 1;
+	}
+	if (!name) throw new Error(MEMBERS_USAGE);
+	return { name, role, timezone };
 }
 
 function runProfileCommand(

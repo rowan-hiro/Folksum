@@ -38,9 +38,13 @@ line-oriented chat and unattended reminder processing:
 folksum chat
 folksum telegram
 folksum members
+folksum members add --name <display-name> [--role owner|member|viewer] [--timezone <iana-timezone>]
 folksum reminders
 folksum schedule
 ```
+
+`folksum members` lists household members; `members add` creates one. The
+role defaults to `member` and the timezone to the configured `timezone`.
 
 ## Telegram alpha
 

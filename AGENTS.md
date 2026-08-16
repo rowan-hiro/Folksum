@@ -170,6 +170,7 @@ credential:
 npm run reminders
 npm run schedule
 folksum members
+folksum members add --name <display-name> [--role owner|member|viewer] [--timezone <iana-timezone>]
 ```
 
 Bookkeeping profiles use revision-aware JSON documents or constrained DSL
