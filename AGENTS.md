@@ -62,7 +62,9 @@ Start the full-screen interactive TUI with:
 npm start
 ```
 
-Open settings with `Ctrl+O` or `/settings`. The TUI can select the provider,
+Open settings with `Ctrl+O` or `/settings`. The `/members` command lists
+household members, and `/members add` creates one through an interactive
+name, role, and timezone prompt. The TUI can select the provider,
 model, thinking level, and credit-card tracking mode, and can run the
 provider-owned API-key or OAuth login flow. Non-secret choices are persisted in
 the JSON configuration file. Provider
@@ -118,6 +120,7 @@ credential:
 npm run reminders
 npm run schedule
 folksum members
+folksum members add --name <display-name> [--role owner|member|viewer] [--timezone <iana-timezone>]
 ```
 
 Bookkeeping profiles use revision-aware JSON documents or constrained DSL

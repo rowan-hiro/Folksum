@@ -26,7 +26,7 @@ import { containsLikelyCredential } from "../app/input-security.ts";
 import { BookkeepingProfileService } from "../app/bookkeeping-profile.ts";
 import { ConfirmationStore } from "../app/confirmation.ts";
 import { FinanceApplication } from "../app/finance-application.ts";
-import type { IdentityScope } from "../app/identity.ts";
+import type { HouseholdRole, IdentityScope } from "../app/identity.ts";
 import { SessionIdentityService } from "../app/session.ts";
 import { ApplicationSettingsController } from "../app/settings.ts";
 import { CARD_TRACKING_MODES, isCardTrackingMode } from "../core/card-tracking.ts";
@@ -277,10 +277,16 @@ class FolksumTui {
 			case "/logout":
 				await this.logoutCurrentProvider();
 				return;
+			case "/members":
+				this.listMembers();
+				return;
+			case "/members add":
+				await this.addMember();
+				return;
 			case "/help":
 				this.append(
 					"System",
-					"Commands: /settings, /login, /logout, /help, /exit. Provider, model, and thinking level can also be changed by asking the assistant. Credentials are local-only and must use /login.",
+					"Commands: /settings, /members, /members add, /login, /logout, /help, /exit. Provider, model, and thinking level can also be changed by asking the assistant. Credentials are local-only and must use /login.",
 				);
 				return;
 		}
@@ -855,6 +861,58 @@ class FolksumTui {
 				"Reminder",
 				`${reminder.cardAccountName}: ${reminder.currency} ${reminder.outstandingAmount}, due ${reminder.dueDate} (${reminder.status}).`,
 			);
+		}
+	}
+
+	private listMembers(): void {
+		const members = this.input.identities.listMembers(this.input.scope.householdId);
+		const lines = members.map(
+			(member) => `- ${member.displayName} (${member.role}, ${member.timezone}) · ${member.id}`,
+		);
+		this.append(
+			"System",
+			lines.length > 0
+				? `Household members:\n${lines.join("\n")}\nUse /members add to create one.`
+				: "No household members. Use /members add to create one.",
+		);
+	}
+
+	private async addMember(): Promise<void> {
+		this.setBusy(true);
+		try {
+			const name = (await this.readInput("New member display name", false)).trim();
+			const role = (await this.choose("Member role", [
+				{ value: "member", label: "member", description: "Default role for household participants." },
+				{ value: "owner", label: "owner", description: "Full access to the household." },
+				{ value: "viewer", label: "viewer", description: "Read-only access to the household." },
+			])) as HouseholdRole;
+			const timezoneChoice = await this.choose("Member timezone", [
+				{
+					value: "configured",
+					label: `Use the configured timezone (${this.input.config.timezone})`,
+				},
+				{ value: "custom", label: "Enter a different IANA timezone" },
+			]);
+			const timezone =
+				timezoneChoice === "custom"
+					? (await this.readInput("IANA timezone, for example Asia/Hong_Kong", false)).trim()
+					: this.input.config.timezone;
+			const member = this.input.identities.createMember({
+				householdId: this.input.scope.householdId,
+				displayName: name,
+				role,
+				timezone,
+			});
+			this.append(
+				"System",
+				`Member created: ${member.displayName} (${member.role}, ${member.timezone}) · ${member.id}`,
+			);
+		} catch (error) {
+			if (isAbortError(error)) this.append("System", "Member creation cancelled.");
+			else this.append("System", safeError(error));
+		} finally {
+			this.setBusy(false);
+			await this.refreshStatus();
 		}
 	}
 
