@@ -21,6 +21,8 @@ import { TelegramReminderService } from "./telegram-reminders.ts";
 const TELEGRAM_FILE_ROOT = "https://api.telegram.org/file";
 const VOICE_MAXIMUM_BYTES = 20 * 1024 * 1024;
 const VOICE_MAXIMUM_SECONDS = 300;
+/** Hung getFile/fetch must not stall the user/chat/topic queue until process exit. */
+export const DEFAULT_VOICE_DOWNLOAD_TIMEOUT_MILLISECONDS = 30_000;
 const REMINDER_INTERVAL_MILLISECONDS = 15 * 60_000;
 const GRACEFUL_SHUTDOWN_MILLISECONDS = 10_000;
 const FORCED_SHUTDOWN_MILLISECONDS = 2_000;
@@ -206,43 +208,107 @@ function createGrammyMessenger(bot: Bot): TelegramChannelMessenger {
  * Downloads one voice payload from the Telegram file API.
  *
  * The bot token stays inside this adapter: the controller only receives audio
- * bytes and a declared MIME type, and never learns the download URL.
+ * bytes and a declared MIME type, and never learns the download URL. The
+ * download has its own deadline so a hung `getFile` or file `fetch` cannot
+ * stall `sequentialize` until the process exits; shutdown still cancels
+ * immediately through the caller-supplied signal.
  */
 export function createTelegramVoiceDownloader(
 	bot: Pick<Bot, "api">,
 	botToken: string,
+	options?: { timeoutMilliseconds?: number },
 ): (input: {
 	fileId: string;
 	maximumBytes: number;
 	signal: AbortSignal;
 }) => Promise<TelegramVoiceDownload> {
+	const timeoutMilliseconds = options?.timeoutMilliseconds ?? DEFAULT_VOICE_DOWNLOAD_TIMEOUT_MILLISECONDS;
+	if (!Number.isSafeInteger(timeoutMilliseconds) || timeoutMilliseconds < 1 || timeoutMilliseconds > 600_000) {
+		throw new TelegramChannelError("The voice download timeout must be between 1 and 600000 milliseconds.");
+	}
+
 	return async ({ fileId, maximumBytes, signal }) => {
-		const file = await bot.api.getFile(fileId, asGrammySignal(signal)).catch(() => {
-			throw new TelegramChannelError("Telegram refused to describe the voice file.");
-		});
-		if (!file.file_path) {
-			throw new TelegramChannelError("Telegram returned no downloadable path for the voice file.");
-		}
-		if (file.file_size !== undefined && file.file_size > maximumBytes) {
-			throw new TelegramChannelError("The voice file is larger than the transcription limit.");
-		}
-
-		const url = `${TELEGRAM_FILE_ROOT}/bot${botToken}/${file.file_path}`;
-		let response: Response;
+		const timeout = new AbortController();
+		const timer = setTimeout(() => timeout.abort(), timeoutMilliseconds);
+		const combined = AbortSignal.any([signal, timeout.signal]);
 		try {
-			response = await fetch(url, { signal });
-		} catch {
+			return await raceAbort(combined, downloadTelegramVoice(bot, botToken, fileId, maximumBytes, combined));
+		} catch (error) {
 			if (signal.aborted) throw new TelegramChannelError("The voice download was cancelled.");
-			throw new TelegramChannelError("Could not reach the Telegram file API to download the voice message.");
+			if (timeout.signal.aborted) throw new TelegramChannelError("The voice download timed out.");
+			throw error;
+		} finally {
+			clearTimeout(timer);
 		}
-		if (!response.ok) {
-			throw new TelegramChannelError(`Telegram returned HTTP ${response.status} for the voice download.`);
-		}
-
-		const audio = await readCappedBody(response, maximumBytes);
-		const mimeType = response.headers.get("content-type")?.split(";", 1)[0]?.trim();
-		return { audio, ...(mimeType ? { mimeType } : {}) };
 	};
+}
+
+async function downloadTelegramVoice(
+	bot: Pick<Bot, "api">,
+	botToken: string,
+	fileId: string,
+	maximumBytes: number,
+	signal: AbortSignal,
+): Promise<TelegramVoiceDownload> {
+	const file = await bot.api.getFile(fileId, asGrammySignal(signal)).catch((error: unknown) => {
+		if (signal.aborted) throw error;
+		throw new TelegramChannelError("Telegram refused to describe the voice file.");
+	});
+	if (!file.file_path) {
+		throw new TelegramChannelError("Telegram returned no downloadable path for the voice file.");
+	}
+	if (file.file_size !== undefined && file.file_size > maximumBytes) {
+		throw new TelegramChannelError("The voice file is larger than the transcription limit.");
+	}
+
+	const url = `${TELEGRAM_FILE_ROOT}/bot${botToken}/${file.file_path}`;
+	let response: Response;
+	try {
+		response = await fetch(url, { signal });
+	} catch (error) {
+		if (signal.aborted) throw error;
+		throw new TelegramChannelError("Could not reach the Telegram file API to download the voice message.");
+	}
+	if (!response.ok) {
+		throw new TelegramChannelError(`Telegram returned HTTP ${response.status} for the voice download.`);
+	}
+
+	const audio = await readCappedBody(response, maximumBytes, signal);
+	const mimeType = response.headers.get("content-type")?.split(";", 1)[0]?.trim();
+	return { audio, ...(mimeType ? { mimeType } : {}) };
+}
+
+/**
+ * Rejects when `signal` aborts even if the underlying API ignores cancellation.
+ * `getFile` and `fetch` receive the same signal so well-behaved clients stop;
+ * the race is what unblocks the serialized conversation if they do not.
+ */
+function raceAbort<T>(signal: AbortSignal, work: Promise<T>): Promise<T> {
+	if (signal.aborted) {
+		void work.catch(() => undefined);
+		return Promise.reject(abortError());
+	}
+	return new Promise<T>((resolve, reject) => {
+		const onAbort = (): void => {
+			void work.catch(() => undefined);
+			reject(abortError());
+		};
+		signal.addEventListener("abort", onAbort, { once: true });
+		work.then(
+			(value) => {
+				signal.removeEventListener("abort", onAbort);
+				resolve(value);
+			},
+			(error) => {
+				signal.removeEventListener("abort", onAbort);
+				reject(error);
+			},
+		);
+	});
+}
+
+function abortError(): Error {
+	return new DOMException("The operation was aborted.", "AbortError");
 }
 
 type GrammyAbortSignal = NonNullable<Parameters<Bot["api"]["getFile"]>[1]>;
@@ -256,14 +322,24 @@ function asGrammySignal(signal: AbortSignal): GrammyAbortSignal {
 	return signal as unknown as GrammyAbortSignal;
 }
 
-async function readCappedBody(response: Response, maximumBytes: number): Promise<Uint8Array> {
+async function readCappedBody(
+	response: Response,
+	maximumBytes: number,
+	signal: AbortSignal,
+): Promise<Uint8Array> {
 	const body = response.body;
 	if (!body) throw new TelegramChannelError("The Telegram voice download returned no content.");
 	const reader = body.getReader();
 	const chunks: Uint8Array[] = [];
 	let total = 0;
+	const abortRead = (): void => {
+		void reader.cancel().catch(() => undefined);
+	};
+	if (signal.aborted) abortRead();
+	else signal.addEventListener("abort", abortRead, { once: true });
 	try {
 		for (;;) {
+			if (signal.aborted) throw abortError();
 			const { done, value } = await reader.read();
 			if (done) break;
 			if (!value) continue;
@@ -274,6 +350,7 @@ async function readCappedBody(response: Response, maximumBytes: number): Promise
 			chunks.push(value);
 		}
 	} finally {
+		signal.removeEventListener("abort", abortRead);
 		await reader.cancel().catch(() => undefined);
 	}
 	if (total === 0) throw new TelegramChannelError("The Telegram voice download was empty.");

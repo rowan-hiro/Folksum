@@ -151,7 +151,10 @@ converter the script started cannot outlive it holding the private temporary
 audio, and the script also turns a termination signal into an ordinary exception
 so that directory is removed. A channel shutdown aborts an in-flight download or
 transcription; a turn cancelled that way fails its update receipt closed and
-sends nothing into the closing channel.
+sends nothing into the closing channel. The download also has its own timeout,
+independent of shutdown: a hung `getFile` or file `fetch` aborts so the
+user/chat/topic queue can accept the next message instead of stalling until the
+process exits.
 
 A transcript is not privileged input. It is provider-supplied text, so it is
 bounded to an explicit character limit before anything else happens, then echoed
@@ -706,8 +709,9 @@ deployment hardening.
   converter, or endpoint is unavailable, and never bypasses the confirmation
   policy for a transcribed request.
 - The transcription credential is never resent through a redirect, a stuck
-  transcription child is force-killed, and shutdown cancels an in-flight voice
-  download or transcription instead of letting it reach a closed database.
+  transcription child is force-killed, a hung Telegram voice download times
+  out on its own, and shutdown cancels an in-flight voice download or
+  transcription instead of letting it reach a closed database.
 - Missing or stale valuations produce warnings, not fabricated estimates.
 - Missing provider credentials leave the TUI available for local login and
   settings, but prevent model prompts. They do not prevent reminder commands.
