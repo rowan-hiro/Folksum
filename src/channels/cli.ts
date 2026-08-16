@@ -39,6 +39,11 @@ import { loadTelegramConfig, type TelegramChannelConfig } from "./telegram-confi
 import { runFolksumTelegram } from "./telegram.ts";
 import { runFolksumTui } from "./tui.ts";
 
+// Declared before the top-level command dispatch: runMembersCommand throws with
+// this message while the module is still evaluating.
+const MEMBERS_USAGE =
+	"Usage: folksum members [list] | add --name <display-name> [--role owner|member|viewer] [--timezone <iana-timezone>]";
+
 const config = loadApplicationConfig();
 const databasePath = resolve(config.databasePath);
 const database = new WealthDatabase(databasePath);
@@ -306,9 +311,6 @@ function printReminders(reminders: ReturnType<WealthService["listCardReminders"]
 		);
 	}
 }
-
-const MEMBERS_USAGE =
-	"Usage: folksum members [list] | add --name <display-name> [--role owner|member|viewer] [--timezone <iana-timezone>]";
 
 function runMembersCommand(
 	identities: SessionIdentityService,
