@@ -199,9 +199,9 @@ interpolation, SQL, templates, or executable code. On success, `apply-dsl`
 prints the active revision as `expectedRevision` but never edits the private
 `.folksum` file. Update its `expected-revision` directive explicitly before the
 next validation or activation; leaving the old value in place produces a stale
-revision error. See
-[`docs/bookkeeping-dsl.md`](docs/bookkeeping-dsl.md) for the grammar and the
-public/private customization boundary.
+revision error. The DSL grammar and the public/private customization boundary
+are described in the commands above; `folksum profile check-dsl` validates a
+private overlay against the active profile without activating it.
 
 ## Build from source
 
