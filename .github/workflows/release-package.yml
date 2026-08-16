@@ -2,11 +2,11 @@ name: Release package
 
 on:
   pull_request:
+    branches:
+      - release
   push:
     branches:
-      - main
       - release
-      - "dev/**"
 
 permissions:
   contents: read
