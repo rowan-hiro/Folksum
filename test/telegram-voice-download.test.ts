@@ -11,16 +11,16 @@ const TOKEN = "test-bot-token";
 const AUDIO = new Uint8Array([1, 2, 3, 4]);
 
 test("rejects an invalid voice download timeout at construction", () => {
-	const bot = hangingGetFileBot();
 	assert.throws(
-		() => createTelegramVoiceDownloader(bot, TOKEN, { timeoutMilliseconds: 0 }),
+		() => createTelegramVoiceDownloader(hangingGetFileBot().bot, TOKEN, { timeoutMilliseconds: 0 }),
 		TelegramChannelError,
 	);
 	assert.equal(DEFAULT_VOICE_DOWNLOAD_TIMEOUT_MILLISECONDS, 30_000);
 });
 
 test("times out a hung Telegram getFile instead of blocking the conversation", async () => {
-	const download = createTelegramVoiceDownloader(hangingGetFileBot(), TOKEN, {
+	const hanging = hangingGetFileBot();
+	const download = createTelegramVoiceDownloader(hanging.bot, TOKEN, {
 		timeoutMilliseconds: 40,
 	});
 	const started = Date.now();
@@ -29,6 +29,8 @@ test("times out a hung Telegram getFile instead of blocking the conversation", a
 		timedOut,
 	);
 	assert.ok(Date.now() - started < 1_000, "a hung getFile must unblock well before process exit");
+	assert.ok(hanging.signal, "getFile must receive the combined abort signal");
+	assert.equal(hanging.signal.aborted, true, "a download timeout must abort the getFile signal");
 });
 
 test("times out a hung Telegram file fetch instead of blocking the conversation", async (context) => {
@@ -69,7 +71,8 @@ test("times out a hung Telegram response body instead of blocking the conversati
 });
 
 test("cancels a hung download on shutdown without waiting for the timeout", async () => {
-	const download = createTelegramVoiceDownloader(hangingGetFileBot(), TOKEN, {
+	const hanging = hangingGetFileBot();
+	const download = createTelegramVoiceDownloader(hanging.bot, TOKEN, {
 		timeoutMilliseconds: 5_000,
 	});
 	const controller = new AbortController();
@@ -82,6 +85,8 @@ test("cancels a hung download on shutdown without waiting for the timeout", asyn
 	const started = Date.now();
 	await assert.rejects(() => pending, channelError("The voice download was cancelled."));
 	assert.ok(Date.now() - started < 500, "shutdown must cancel without waiting for the download timeout");
+	assert.ok(hanging.signal, "getFile must receive the combined abort signal");
+	assert.equal(hanging.signal.aborted, true);
 });
 
 test("unblocks the next download after a hung getFile times out", async (context) => {
@@ -188,20 +193,44 @@ test("stops reading once the streamed body exceeds the size limit", async (conte
 });
 
 test("forwards the file id and abort signal to getFile", async (context) => {
-	const seen: { fileId?: string; aborted?: boolean } = {};
+	let seenFileId: string | undefined;
+	let seenSignal: AbortSignal | undefined;
 	const restoreFetch = stubFetch(context, async () => audioResponse());
 	const download = createTelegramVoiceDownloader(
 		voiceBot(async (fileId, signal) => {
-			seen.fileId = fileId;
-			seen.aborted = signal ? signal.aborted : false;
+			seenFileId = fileId;
+			seenSignal = signal;
 			return { file_path: "voice/ok.ogg", file_size: AUDIO.byteLength };
 		}),
 		TOKEN,
 		{ timeoutMilliseconds: 1_000 },
 	);
 	await download({ fileId: "voice-42", maximumBytes: 1_024, signal: new AbortController().signal });
-	assert.deepEqual(seen, { fileId: "voice-42", aborted: false });
+	assert.equal(seenFileId, "voice-42");
+	assert.ok(seenSignal instanceof AbortSignal, "getFile must receive an abort signal");
+	assert.equal(seenSignal.aborted, false);
 	restoreFetch();
+});
+
+test("reports a timeout when getFile honors the abort signal", async () => {
+	let seenSignal: AbortSignal | undefined;
+	const download = createTelegramVoiceDownloader(
+		voiceBot((_fileId, signal) => {
+			seenSignal = signal;
+			return new Promise((_, reject) => {
+				if (!signal) throw new Error("getFile must receive an abort signal");
+				signal.addEventListener("abort", () => reject(abortError()), { once: true });
+			});
+		}),
+		TOKEN,
+		{ timeoutMilliseconds: 40 },
+	);
+	await assert.rejects(
+		() => download({ fileId: "file-1", maximumBytes: 1_024, signal: new AbortController().signal }),
+		timedOut,
+	);
+	assert.ok(seenSignal instanceof AbortSignal, "getFile must receive the combined abort signal");
+	assert.equal(seenSignal.aborted, true);
 });
 
 test("reports a refused getFile, a missing path, and a fetch failure with distinct messages", async (context) => {
@@ -306,7 +335,7 @@ test("strips content-type parameters and omits mimeType when the header is absen
 });
 
 test("cancels an already-aborted download and a fetch that honors the signal", async (context) => {
-	const already = createTelegramVoiceDownloader(hangingGetFileBot(), TOKEN, {
+	const already = createTelegramVoiceDownloader(hangingGetFileBot().bot, TOKEN, {
 		timeoutMilliseconds: 5_000,
 	});
 	const aborted = new AbortController();
@@ -368,8 +397,46 @@ test("cancels a streamed body when the caller aborts mid-read", async (context) 
 	restoreFetch();
 });
 
-function hangingGetFileBot(): Parameters<typeof createTelegramVoiceDownloader>[0] {
-	return voiceBot(() => new Promise(() => undefined));
+test("does not treat a cancel-induced end of stream as a complete download", async (context) => {
+	const controller = new AbortController();
+	const restoreFetch = stubFetch(context, async () =>
+		new Response(
+			new ReadableStream({
+				pull(stream) {
+					stream.enqueue(new Uint8Array([1, 2, 3]));
+					controller.abort();
+					stream.close();
+				},
+			}),
+			{ status: 200, headers: { "content-type": "audio/ogg" } },
+		),
+	);
+	const download = createTelegramVoiceDownloader(
+		voiceBot(async () => ({ file_path: "voice/ok.ogg" })),
+		TOKEN,
+		{ timeoutMilliseconds: 5_000 },
+	);
+	await assert.rejects(
+		() => download({ fileId: "file-1", maximumBytes: 1_024, signal: controller.signal }),
+		channelError("The voice download was cancelled."),
+	);
+	restoreFetch();
+});
+
+function hangingGetFileBot(): {
+	bot: Parameters<typeof createTelegramVoiceDownloader>[0];
+	signal: AbortSignal | undefined;
+} {
+	const state: { signal: AbortSignal | undefined } = { signal: undefined };
+	return {
+		bot: voiceBot((_fileId, signal) => {
+			state.signal = signal;
+			return new Promise(() => undefined);
+		}),
+		get signal() {
+			return state.signal;
+		},
+	};
 }
 
 function resolvedGetFileBot(): Parameters<typeof createTelegramVoiceDownloader>[0] {

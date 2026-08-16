@@ -341,6 +341,9 @@ async function readCappedBody(
 		for (;;) {
 			if (signal.aborted) throw abortError();
 			const { done, value } = await reader.read();
+			// `reader.cancel()` often settles the next read as `{ done: true }`.
+			// Treat that as abort, not as a complete body of whatever was already read.
+			if (signal.aborted) throw abortError();
 			if (done) break;
 			if (!value) continue;
 			total += value.byteLength;
@@ -353,6 +356,7 @@ async function readCappedBody(
 		signal.removeEventListener("abort", abortRead);
 		await reader.cancel().catch(() => undefined);
 	}
+	if (signal.aborted) throw abortError();
 	if (total === 0) throw new TelegramChannelError("The Telegram voice download was empty.");
 
 	const audio = new Uint8Array(total);
