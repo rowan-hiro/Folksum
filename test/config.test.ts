@@ -32,6 +32,10 @@ test("uses defaults when the default JSON configuration file is absent", (contex
 		provider: "openai",
 		thinkingLevel: "low",
 		cardTrackingMode: "lightweight",
+		voiceTranscription: "off",
+		voiceModel: "google/gemini-2.5-flash",
+		voiceEndpoint: "https://openrouter.ai/api/v1/chat/completions",
+		voiceCommand: "python3",
 	});
 });
 
@@ -70,6 +74,11 @@ test("loads common settings from a JSON file", (context) => {
 			model: "example-model",
 			thinkingLevel: "high",
 			cardTrackingMode: "integrated",
+			voiceTranscription: "openrouter",
+			voiceModel: "openai/gpt-4o-audio-preview",
+			voiceEndpoint: "https://openrouter.example/api/v1/chat/completions",
+			voiceLanguage: "zh-HK",
+			voiceCommand: "/usr/bin/python3",
 		}),
 	);
 
@@ -87,7 +96,55 @@ test("loads common settings from a JSON file", (context) => {
 		model: "example-model",
 		thinkingLevel: "high",
 		cardTrackingMode: "integrated",
+		voiceTranscription: "openrouter",
+		voiceModel: "openai/gpt-4o-audio-preview",
+		voiceEndpoint: "https://openrouter.example/api/v1/chat/completions",
+		voiceLanguage: "zh-HK",
+		voiceCommand: "/usr/bin/python3",
 	});
+});
+
+test("validates voice transcription settings and keeps the key out of the JSON file", (context) => {
+	const directory = createDirectory(context);
+	assert.equal(
+		loadApplicationConfig({
+			cwd: directory,
+			env: { FOLKSUM_VOICE_TRANSCRIPTION: "openrouter", FOLKSUM_VOICE_MODEL: "vendor/model" },
+		}).voiceModel,
+		"vendor/model",
+	);
+	assert.throws(
+		() => loadApplicationConfig({ cwd: directory, env: { FOLKSUM_VOICE_TRANSCRIPTION: "whisper" } }),
+		ApplicationConfigError,
+	);
+	assert.throws(
+		() =>
+			loadApplicationConfig({
+				cwd: directory,
+				env: { FOLKSUM_VOICE_ENDPOINT: "http://openrouter.example/v1/chat/completions" },
+			}),
+		/must use HTTPS/,
+	);
+	assert.throws(
+		() => loadApplicationConfig({ cwd: directory, env: { FOLKSUM_VOICE_ENDPOINT: "not-a-url" } }),
+		/must be a valid URL/,
+	);
+
+	const path = join(directory, "with-key.json");
+	writeFileSync(path, JSON.stringify({ voiceApiKey: "sk-secret" }));
+	assert.throws(
+		() => loadApplicationConfig({ cwd: directory, env: { FOLKSUM_CONFIG_PATH: "with-key.json" } }),
+		/Unknown configuration value "voiceApiKey"/,
+	);
+	assert.throws(
+		() =>
+			patchApplicationConfig(
+				join(directory, "config.json"),
+				{ voiceTranscription: "openrouter" } as never,
+				{ env: {} },
+			),
+		/cannot be changed at runtime/,
+	);
 });
 
 test("environment variables override individual JSON settings", (context) => {

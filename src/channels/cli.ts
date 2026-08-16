@@ -33,6 +33,7 @@ import { createFolksumModels } from "../runtime/pi/models.ts";
 import { createPiRuntime } from "../runtime/pi/runtime.ts";
 import { PiRuntimeSettingsController } from "../runtime/pi/settings.ts";
 import type { PiConfirmationRequest } from "../runtime/pi/tools.ts";
+import { createVoiceTranscriber } from "../runtime/voice/python-transcriber.ts";
 import { loadTelegramConfig, type TelegramChannelConfig } from "./telegram-config.ts";
 import { runFolksumTelegram } from "./telegram.ts";
 import { runFolksumTui } from "./tui.ts";
@@ -129,6 +130,7 @@ async function runTelegramCommand(input: {
 		throw new Error("A model is required for Telegram. Set model in the JSON config or FOLKSUM_MODEL.");
 	}
 	const telegramConfig = loadTelegramConfig();
+	const voiceTranscriber = createVoiceTranscriber(input.config);
 	input.database.transaction(() => {
 		bindTelegramIdentities(input.wealth, input.identities, telegramConfig);
 	});
@@ -165,6 +167,7 @@ async function runTelegramCommand(input: {
 		receipts: new ChannelUpdateReceiptStore(input.database),
 		scheduler: input.scheduler,
 		outbox: input.outbox,
+		...(voiceTranscriber ? { voiceTranscriber } : {}),
 	});
 }
 

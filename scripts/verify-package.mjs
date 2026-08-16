@@ -64,6 +64,7 @@ try {
 		"README.md",
 		"config.example.json",
 		"telegram.example.json",
+		"python/folksum_transcribe.py",
 		"dist/channels/cli.js",
 		"package.json",
 	]) {
@@ -72,7 +73,7 @@ try {
 	for (const path of packagedPaths) {
 		assert.match(
 			path,
-			/^(?:LICENSE|README\.md|config\.example\.json|telegram\.example\.json|package\.json|dist\/.*\.js)$/,
+			/^(?:LICENSE|README\.md|config\.example\.json|telegram\.example\.json|package\.json|python\/folksum_transcribe\.py|dist\/.*\.js)$/,
 			`unexpected package entry: ${path}`,
 		);
 		assert.doesNotMatch(
@@ -110,7 +111,13 @@ try {
 	assert.equal(manifest.name, "folksum");
 	assert.equal(manifest.private, undefined, "publishable manifest must not be private");
 	assert.equal(manifest.bin?.folksum, "dist/channels/cli.js");
-	assert.deepEqual(manifest.files, ["dist", "config.example.json", "telegram.example.json", "README.md"]);
+	assert.deepEqual(manifest.files, [
+		"dist",
+		"python/folksum_transcribe.py",
+		"config.example.json",
+		"telegram.example.json",
+		"README.md",
+	]);
 	assert.equal(manifest.engines?.node, ">=22.19.0");
 	assert.equal(manifest.bundleDependencies, undefined);
 	assert.equal(manifest.bundledDependencies, undefined);

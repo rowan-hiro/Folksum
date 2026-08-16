@@ -85,10 +85,50 @@ redelivery cannot repeat an operation; an update interrupted by a process crash
 is marked failed rather than replayed automatically, and the user may resend it
 as a new message.
 
-Voice transcription is deliberately disabled in this alpha. Voice files are
-not downloaded or sent to the model; the bot asks the user to send text. A
-channel-neutral `VoiceTranscriber` interface is reserved for a later local
-transcription implementation.
+Voice transcription is disabled by default. While `voiceTranscription` is
+`off`, voice files are not downloaded or sent anywhere and the bot asks the user
+to send text instead.
+
+Setting `voiceTranscription` to `openrouter` enables opt-in transcription. An
+allow-listed voice message is downloaded from the Telegram file API and handed
+to the bundled Python script `python/folksum_transcribe.py`, which posts the
+audio to the configured OpenRouter chat-completions endpoint and returns the
+transcript on standard output. The transcript is echoed back to the chat and
+then re-enters the conversation through exactly the same path as a typed
+message, so it gains no additional financial authority: confirmation policy,
+Finance IR, and the credential-shaped-input check all still apply.
+
+```sh
+export FOLKSUM_VOICE_TRANSCRIPTION=openrouter
+export FOLKSUM_VOICE_API_KEY=<openrouter-key>
+FOLKSUM_TELEGRAM_BOT_TOKEN=<bot-token> folksum telegram
+```
+
+The transcription key is accepted only through `FOLKSUM_VOICE_API_KEY`. It is
+never read from JSON, never stored in SQLite, never passed as a command-line
+argument, and never shown to the model. The script runs as a short-lived child
+process with a reduced environment, so unrelated secrets such as the Telegram
+bot token are not inherited. Voice messages longer than 300 seconds or larger
+than 20 MB are refused before anything is downloaded.
+
+The endpoint must be the final URL: the script refuses redirects instead of
+resending the credentialed request elsewhere. A transcript longer than 2000
+characters is rejected rather than echoed or sent to the model, and stopping the
+bot cancels any download or transcription still in flight, including a converter
+the script had started.
+
+Running the upload out of process is not a memory boundary: Folksum downloads
+the audio and reads the key itself in order to start the child. What the key
+never does is reach JSON, SQLite, a command-line argument, or the model.
+
+The script requires Python 3 and only the standard library. Telegram sends
+voice messages as Ogg/Opus, which the OpenRouter audio input does not accept
+directly, so `ffmpeg` must be installed to convert them to WAV. Without it the
+bot reports a clear error and asks for text rather than sending unusable audio.
+
+Enabling transcription is a deliberate privacy decision: the audio leaves the
+machine and reaches the configured transcription provider. Keep it `off` to
+preserve the alpha behavior.
 
 SQLite remains the financial system of record, but messages and bot replies
 necessarily traverse Telegram. Provider prompts also leave the machine under
@@ -218,6 +258,12 @@ Environment variables override individual JSON values:
 | `FOLKSUM_AUTH_PATH` | none | `~/.folksum/auth.json` |
 | `FOLKSUM_TELEGRAM_CONFIG_PATH` | none | `.data/telegram.json` |
 | `FOLKSUM_TELEGRAM_BOT_TOKEN` | none | none; required by `folksum telegram` |
+| `FOLKSUM_VOICE_TRANSCRIPTION` | `voiceTranscription` | `off` |
+| `FOLKSUM_VOICE_MODEL` | `voiceModel` | `google/gemini-2.5-flash` |
+| `FOLKSUM_VOICE_ENDPOINT` | `voiceEndpoint` | `https://openrouter.ai/api/v1/chat/completions` |
+| `FOLKSUM_VOICE_LANGUAGE` | `voiceLanguage` | none |
+| `FOLKSUM_VOICE_COMMAND` | `voiceCommand` | `python3` |
+| `FOLKSUM_VOICE_API_KEY` | none | none; required when transcription is enabled |
 
 Provider credentials are stored separately in
 `~/.folksum/auth.json`. Use the TUI settings screen for API-key or

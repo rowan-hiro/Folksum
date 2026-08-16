@@ -8,5 +8,10 @@
 	"timezone": "Asia/Hong_Kong",
 	"cardTrackingMode": "lightweight",
 	"provider": "openai",
-	"thinkingLevel": "low"
+	"thinkingLevel": "low",
+	"voiceTranscription": "off",
+	"voiceModel": "google/gemini-2.5-flash",
+	"voiceEndpoint": "https://openrouter.ai/api/v1/chat/completions",
+	"voiceLanguage": "zh-HK",
+	"voiceCommand": "python3"
 }

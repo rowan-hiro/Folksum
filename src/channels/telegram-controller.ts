@@ -6,6 +6,8 @@ import {
 	type ConversationTurnResult,
 } from "../app/conversation.ts";
 import type { IdentityScope } from "../app/identity.ts";
+import { containsLikelyCredential } from "../app/input-security.ts";
+import type { VoiceTranscriber } from "../app/voice-transcriber.ts";
 import {
 	findTelegramIdentity,
 	isAllowedTelegramConversation,
@@ -15,10 +17,38 @@ import {
 } from "./telegram-config.ts";
 
 const TELEGRAM_TEXT_LIMIT = 4_000;
+const DEFAULT_VOICE_MAXIMUM_BYTES = 20 * 1024 * 1024;
+const DEFAULT_VOICE_MAXIMUM_SECONDS = 300;
+/** A spoken capture request is short; anything longer is a provider fault. */
+const MAXIMUM_TRANSCRIPT_CHARACTERS = 2_000;
+const VOICE_DISABLED_MESSAGE =
+	"Voice transcription is not enabled in this alpha. No audio was downloaded or sent to the model; please send the request as text.";
 
 export interface TelegramInlineButton {
 	text: string;
 	callbackData: string;
+}
+
+export interface TelegramVoiceDownload {
+	audio: Uint8Array;
+	mimeType?: string;
+}
+
+/**
+ * Voice capability handed to the controller when transcription is enabled.
+ *
+ * The controller never sees the bot token: downloading is delegated back to the
+ * channel adapter, and transcription is delegated to the runtime transcriber.
+ */
+export interface TelegramVoiceSupport {
+	transcriber: VoiceTranscriber;
+	download(input: {
+		fileId: string;
+		maximumBytes: number;
+		signal: AbortSignal;
+	}): Promise<TelegramVoiceDownload>;
+	maximumBytes?: number;
+	maximumDurationSeconds?: number;
 }
 
 export interface TelegramChannelMessenger {
@@ -40,7 +70,13 @@ interface TelegramInboundBase {
 
 export type TelegramInboundUpdate =
 	| (TelegramInboundBase & { kind: "text"; text: string })
-	| (TelegramInboundBase & { kind: "voice" })
+	| (TelegramInboundBase & {
+			kind: "voice";
+			fileId: string;
+			mimeType?: string;
+			durationSeconds?: number;
+			fileSizeBytes?: number;
+	  })
 	| (TelegramInboundBase & { kind: "unsupported" })
 	| (TelegramInboundBase & {
 			kind: "callback";
@@ -60,6 +96,10 @@ export class TelegramChannelController {
 	private readonly actions: ChannelActionRegistry;
 	private readonly receipts: ChannelUpdateReceiptStore;
 	private readonly messenger: TelegramChannelMessenger;
+	private readonly voice: TelegramVoiceSupport | undefined;
+	private readonly voiceMaximumBytes: number;
+	private readonly voiceMaximumSeconds: number;
+	private readonly shutdown = new AbortController();
 
 	constructor(input: {
 		botId: string;
@@ -68,6 +108,7 @@ export class TelegramChannelController {
 		actions: ChannelActionRegistry;
 		receipts: ChannelUpdateReceiptStore;
 		messenger: TelegramChannelMessenger;
+		voice?: TelegramVoiceSupport;
 	}) {
 		this.botId = requireIdentifier(input.botId, "Telegram bot ID");
 		this.config = input.config;
@@ -75,6 +116,24 @@ export class TelegramChannelController {
 		this.actions = input.actions;
 		this.receipts = input.receipts;
 		this.messenger = input.messenger;
+		this.voice = input.voice;
+		this.voiceMaximumBytes = requirePositiveInteger(
+			input.voice?.maximumBytes ?? DEFAULT_VOICE_MAXIMUM_BYTES,
+			"Telegram voice size limit",
+		);
+		this.voiceMaximumSeconds = requirePositiveInteger(
+			input.voice?.maximumDurationSeconds ?? DEFAULT_VOICE_MAXIMUM_SECONDS,
+			"Telegram voice duration limit",
+		);
+	}
+
+	/**
+	 * Cancels channel-owned work that the conversation coordinator does not own,
+	 * so an in-flight voice download or transcription cannot outlive shutdown and
+	 * touch a closed database.
+	 */
+	stop(): void {
+		this.shutdown.abort();
 	}
 
 	async handle(update: TelegramInboundUpdate): Promise<TelegramUpdateResult> {
@@ -104,6 +163,17 @@ export class TelegramChannelController {
 			this.receipts.complete(claim.receipt.id);
 			return { status: "completed" };
 		} catch (error) {
+			// A shutdown tore the channel down mid-turn. Fail closed so redelivery
+			// cannot silently repeat half-finished work, and answer nobody: the
+			// runner is stopping and the database may already be closing.
+			if (this.shutdown.signal.aborted) {
+				try {
+					this.receipts.fail(claim.receipt.id, "Telegram shutdown cancelled this update.");
+				} catch {
+					// The database may already be closed; the process is going away.
+				}
+				return { status: "failed" };
+			}
 			if (error instanceof ConversationInputError || error instanceof ChannelActionError) {
 				await this.sendHandledError(update, error.message).catch(() => undefined);
 				this.receipts.complete(claim.receipt.id);
@@ -126,10 +196,7 @@ export class TelegramChannelController {
 				return;
 			}
 			case "voice":
-				await this.sendText(
-					update.address,
-					"Voice transcription is not enabled in this alpha. No audio was downloaded or sent to the model; please send the request as text.",
-				);
+				await this.processVoice(update, scope);
 				return;
 			case "unsupported":
 				await this.sendText(update.address, "This alpha accepts text messages only. Voice transcription and file parsing are not enabled.");
@@ -137,6 +204,98 @@ export class TelegramChannelController {
 			case "callback":
 				await this.processCallback(update, scope);
 		}
+	}
+
+	/**
+	 * Turns an allow-listed voice message into text and then reuses the ordinary
+	 * text turn. Transcription never gains financial authority: the transcript
+	 * re-enters through the same coordinator prompt as a typed message.
+	 */
+	private async processVoice(
+		update: Extract<TelegramInboundUpdate, { kind: "voice" }>,
+		scope: IdentityScope,
+	): Promise<void> {
+		const voice = this.voice;
+		if (!voice) {
+			await this.sendText(update.address, VOICE_DISABLED_MESSAGE);
+			return;
+		}
+		if (update.durationSeconds !== undefined && update.durationSeconds > this.voiceMaximumSeconds) {
+			await this.sendText(
+				update.address,
+				`This voice message is ${update.durationSeconds} seconds long; the limit is ${this.voiceMaximumSeconds} seconds. No audio was downloaded. Please send a shorter message.`,
+			);
+			return;
+		}
+		if (update.fileSizeBytes !== undefined && update.fileSizeBytes > this.voiceMaximumBytes) {
+			await this.sendText(
+				update.address,
+				"This voice message is larger than the transcription limit. No audio was downloaded. Please send a shorter message.",
+			);
+			return;
+		}
+
+		await this.messenger.sendTyping(update.address).catch(() => undefined);
+		const signal = this.shutdown.signal;
+		let transcript: string;
+		try {
+			const download = await voice.download({
+				fileId: update.fileId,
+				maximumBytes: this.voiceMaximumBytes,
+				signal,
+			});
+			const mimeType = update.mimeType?.trim() || download.mimeType?.trim();
+			const result = await voice.transcriber.transcribe(
+				{ audio: download.audio, ...(mimeType ? { mimeType } : {}) },
+				signal,
+			);
+			transcript = sanitizeTelegramText(result.text).trim();
+		} catch (error) {
+			// A shutdown cancelled the work; `handle` fails the receipt silently.
+			this.assertNotShuttingDown();
+			await this.sendText(
+				update.address,
+				`Voice transcription failed: ${truncateTelegramText(describeVoiceFailure(error), 300)} You can send the request as text instead.`,
+			);
+			return;
+		}
+		this.assertNotShuttingDown();
+
+		if (!transcript) {
+			await this.sendText(
+				update.address,
+				"No speech was recognized in that voice message. Please try again or send the request as text.",
+			);
+			return;
+		}
+		// The transcript is provider-supplied text, not a trusted local value.
+		if (transcript.length > MAXIMUM_TRANSCRIPT_CHARACTERS) {
+			await this.sendText(
+				update.address,
+				`The transcript was ${transcript.length} characters long; the limit is ${MAXIMUM_TRANSCRIPT_CHARACTERS}. It was not sent to the model. Please send a shorter voice message or type the request.`,
+			);
+			return;
+		}
+		if (containsLikelyCredential(transcript)) {
+			await this.sendText(
+				update.address,
+				"The transcript looks like a provider credential and was not sent to the model. Configure credentials through the local TUI.",
+			);
+			return;
+		}
+
+		await this.sendText(update.address, `Heard: ${transcript}`);
+		// The echo is awaited channel work, so shutdown may have started meanwhile;
+		// prompting now would fail inside the coordinator and answer into a closing
+		// channel.
+		this.assertNotShuttingDown();
+		await this.messenger.sendTyping(update.address).catch(() => undefined);
+		this.assertNotShuttingDown();
+		await this.renderTurn(update.address, await this.coordinator.prompt(scope, transcript));
+	}
+
+	private assertNotShuttingDown(): void {
+		if (this.shutdown.signal.aborted) throw new TelegramShutdownError();
 	}
 
 	private async processCallback(
@@ -286,6 +445,24 @@ function truncateTelegramText(value: string, maximumLength: number): string {
 
 function isHighSurrogate(value: number): boolean {
 	return value >= 0xd800 && value <= 0xdbff;
+}
+
+/** Marks a turn abandoned because the channel is shutting down. */
+class TelegramShutdownError extends Error {
+	constructor() {
+		super("The Telegram channel is shutting down.");
+		this.name = "TelegramShutdownError";
+	}
+}
+
+function describeVoiceFailure(error: unknown): string {
+	const message = error instanceof Error ? error.message.trim() : "";
+	return sanitizeTelegramText(message) || "the transcription service did not return a result.";
+}
+
+function requirePositiveInteger(value: number, label: string): number {
+	if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${label} must be a positive integer.`);
+	return value;
 }
 
 function requireIdentifier(value: string, label: string): string {

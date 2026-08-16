@@ -122,10 +122,44 @@ still passes through Finance IR and the confirmation policy.
 
 The reminder loop runs immediately and every fifteen minutes, evaluates each
 recipient's local date, and renders the existing outbox payload without an LLM.
-Failures use bounded exponential retry and stop after five attempts. Voice
-updates are acknowledged without calling `getFile`; the application defines a
-`VoiceTranscriber` interface for a future local implementation but does not
-download or persist voice data in this alpha.
+Failures use bounded exponential retry and stop after five attempts.
+
+Voice handling is an explicit, disabled-by-default capability. While
+`voiceTranscription` is `off`, a voice update is acknowledged without calling
+`getFile` and no audio leaves Telegram. When the household enables
+`openrouter`, the adapter downloads the allow-listed audio, enforces duration
+and size ceilings before the download, and passes the bytes to the application's
+channel-neutral `VoiceTranscriber`. The runtime implementation spawns the
+bundled standard-library Python script, which posts base64 audio to the
+configured HTTPS endpoint and returns exactly one JSON result on standard
+output.
+
+The out-of-process design is a real but bounded boundary, and the distinction
+matters when reasoning about exposure. The application downloads the audio into
+its own memory and reads the key from the environment in order to start the
+child, so neither value is hidden from the application process. What the child
+provides is that the provider upload, the base64 encoding, and the ffmpeg
+conversion happen outside it. The credential guarantees are the durable ones:
+the key is never persisted to JSON or SQLite, never placed in an argument list
+that other local users can read from the process table, and never exposed to the
+model, and the child inherits no unrelated secrets such as the bot token.
+
+The script refuses HTTP redirects rather than resending the credentialed request
+to a new location, so a redirecting endpoint can never move the key to another
+host or to plain HTTP. Termination reaches the whole child process group, so a
+converter the script started cannot outlive it holding the private temporary
+audio, and the script also turns a termination signal into an ordinary exception
+so that directory is removed. A channel shutdown aborts an in-flight download or
+transcription; a turn cancelled that way fails its update receipt closed and
+sends nothing into the closing channel.
+
+A transcript is not privileged input. It is provider-supplied text, so it is
+bounded to an explicit character limit before anything else happens, then echoed
+to the originating chat and submitted through the same coordinator prompt as a
+typed message; the credential-shaped-input check, confirmation policy, and
+Finance IR boundary all apply unchanged. Transcription failures, empty
+transcripts, oversized audio, and oversized transcripts produce plain channel
+messages and never a partial financial operation.
 
 ### 3.2 Finance IR
 
@@ -623,8 +657,16 @@ user-to-member bindings. That file must be owner-only on POSIX systems. The bot
 token is accepted only through `FOLKSUM_TELEGRAM_BOT_TOKEN`; it is not a valid
 property in either JSON configuration. Authorized Telegram text necessarily
 traverses Telegram and then the selected model provider, while the projected Pi
-conversation remains in local SQLite. Voice payloads do not leave Telegram in
-the alpha because the adapter never downloads them.
+conversation remains in local SQLite.
+
+Voice payloads do not leave Telegram while `voiceTranscription` is `off`,
+because the adapter never downloads them. Enabling `openrouter` is a deliberate
+local decision that widens that boundary: the audio is downloaded and sent to
+the configured transcription provider under that provider's retention policy.
+The transcription credential is accepted only through `FOLKSUM_VOICE_API_KEY`,
+is not a valid property in either JSON configuration, and is passed to the
+transcription script through its environment rather than its argument list. The
+model can neither read the key nor change the transcription mode.
 
 Bookkeeping profile files are explicit revision-aware import/export documents,
 not a second live configuration source. Active profile revisions and immutable
@@ -659,6 +701,13 @@ deployment hardening.
   actor and session; restarting the process invalidates them.
 - Telegram reminder delivery retries at most five times and never initiates a
   payment.
+- Voice transcription is disabled by default, refuses oversized or overlong
+  audio before downloading it, fails closed when the transcription script,
+  converter, or endpoint is unavailable, and never bypasses the confirmation
+  policy for a transcribed request.
+- The transcription credential is never resent through a redirect, a stuck
+  transcription child is force-killed, and shutdown cancels an in-flight voice
+  download or transcription instead of letting it reach a closed database.
 - Missing or stale valuations produce warnings, not fabricated estimates.
 - Missing provider credentials leave the TUI available for local login and
   settings, but prevent model prompts. They do not prevent reminder commands.
@@ -684,7 +733,10 @@ The first runnable version is complete when automated tests prove that:
 9. profile revisions, categorization metadata, file concurrency, and declarative
    export behavior preserve the accounting and runtime boundaries; and
 10. Telegram allowlists, receipts, scoped callbacks, reminder retries, and
-    graceful shutdown preserve the same Finance IR and credential boundaries.
+    graceful shutdown preserve the same Finance IR and credential boundaries; and
+11. voice transcription stays disabled without explicit configuration, keeps its
+    credential out of arguments and configuration files, and routes every
+    transcript through the ordinary text turn.
 
 ## 12. Deferred extensions
 
@@ -693,8 +745,9 @@ The first runnable version is complete when automated tests prove that:
 - receipt OCR and bank/card imports;
 - FX conversion and historical exchange-rate sources;
 - securities, lots, performance, and capital gains;
-- local voice transcription, Telegram Mini Apps, webhooks, and additional chat
-  notification adapters;
+- fully local, on-device voice transcription that removes the third-party
+  transcription provider;
+- Telegram Mini Apps, webhooks, and additional chat notification adapters;
 - push and email notification adapters; and
 - bank payment initiation with strong confirmation and reconciliation.
 

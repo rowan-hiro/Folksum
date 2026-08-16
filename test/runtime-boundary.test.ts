@@ -28,7 +28,13 @@ test("declares published Pi packages instead of local checkout dependencies", ()
 	);
 	assert.equal(packageJson.private, undefined);
 	assert.equal(packageJson.bin?.folksum, "dist/channels/cli.js");
-	assert.deepEqual(packageJson.files, ["dist", "config.example.json", "telegram.example.json", "README.md"]);
+	assert.deepEqual(packageJson.files, [
+		"dist",
+		"python/folksum_transcribe.py",
+		"config.example.json",
+		"telegram.example.json",
+		"README.md",
+	]);
 	assert.equal(packageJson.bundleDependencies, undefined);
 	assert.equal(packageJson.bundledDependencies, undefined);
 	assert.equal(packageJson.scripts.start, "node dist/channels/cli.js tui");

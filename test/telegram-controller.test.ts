@@ -16,6 +16,11 @@ import {
 	type TelegramInlineButton,
 } from "../src/channels/telegram-controller.ts";
 import type { TelegramConversationAddress } from "../src/channels/telegram-config.ts";
+import type {
+	VoiceTranscriber,
+	VoiceTranscriptionInput,
+	VoiceTranscriptionResult,
+} from "../src/app/voice-transcriber.ts";
 import { WealthDatabase } from "../src/core/database.ts";
 import { WealthService } from "../src/core/wealth-service.ts";
 import type { PiConfirmationRequest } from "../src/runtime/pi/tools.ts";
@@ -48,6 +53,19 @@ class FakeMessenger implements TelegramChannelMessenger {
 
 	async clearButtons(address: TelegramConversationAddress, messageId: number): Promise<void> {
 		this.cleared.push({ address: { ...address }, messageId });
+	}
+}
+
+class FakeTranscriber implements VoiceTranscriber {
+	readonly calls: VoiceTranscriptionInput[] = [];
+	readonly results: Array<VoiceTranscriptionResult | Error> = [];
+
+	async transcribe(input: VoiceTranscriptionInput): Promise<VoiceTranscriptionResult> {
+		this.calls.push(input);
+		const next = this.results.shift();
+		if (!next) throw new Error("No transcription result was queued.");
+		if (next instanceof Error) throw next;
+		return next;
 	}
 }
 
@@ -153,7 +171,7 @@ test("enforces authorization, deduplicates updates, and handles choices and conf
 	);
 	assert.equal(prompts.filter((prompt) => prompt === "hello").length, 1);
 
-	await controller.handle({ kind: "voice", updateId: "2", userId: "101", address });
+	await controller.handle({ kind: "voice", updateId: "2", userId: "101", address, fileId: "voice-1" });
 	assert.match(messenger.messages.at(-1)?.text ?? "", /No audio was downloaded/);
 	const promptCount = prompts.length;
 	await controller.handle({
@@ -223,6 +241,249 @@ test("enforces authorization, deduplicates updates, and handles choices and conf
 		(database.connection.prepare("SELECT COUNT(*) AS count FROM channel_update_receipts").get() as { count: number }).count,
 		9,
 	);
+});
+
+test("transcribes allow-listed voice messages and reuses the ordinary text turn", async (context) => {
+	const database = new WealthDatabase(":memory:");
+	context.after(() => database.close());
+	const wealth = new WealthService(database, { baseCurrency: "HKD" });
+	const identities = new SessionIdentityService(database);
+	const member = identities.createMember({
+		householdId: wealth.household.id,
+		displayName: "Owner",
+		role: "owner",
+		timezone: "UTC",
+	});
+	identities.bindChannelIdentity({ memberId: member.id, channel: "telegram", externalId: "101" });
+	const application = new FinanceApplication(wealth, new ConfirmationStore(database));
+	const prompts: string[] = [];
+	const coordinator = new ConversationCoordinator({
+		identities,
+		application,
+		runtimeFactory: async () => ({
+			async prompt(text, onText) {
+				prompts.push(text);
+				onText?.("Assistant response.");
+			},
+			abort() {},
+		}),
+	});
+
+	const transcriber = new FakeTranscriber();
+	const downloads: Array<{ fileId: string; maximumBytes: number; aborted: boolean }> = [];
+	const messenger = new FakeMessenger();
+	const controller = new TelegramChannelController({
+		botId: "9001",
+		config: { allowedChats: [{ chatId: "-1001" }], identities: [{ userId: "101", memberId: member.id }] },
+		coordinator,
+		actions: new ChannelActionRegistry(),
+		receipts: new ChannelUpdateReceiptStore(database),
+		messenger,
+		voice: {
+			transcriber,
+			async download({ fileId, maximumBytes, signal }) {
+				downloads.push({ fileId, maximumBytes, aborted: signal.aborted });
+				return { audio: new Uint8Array([0x4f, 0x67, 0x67, 0x53]), mimeType: "application/octet-stream" };
+			},
+			maximumBytes: 1_024,
+			maximumDurationSeconds: 60,
+		},
+	});
+	const address = { chatId: "-1001" };
+	const voiceUpdate = (updateId: string, extra: Record<string, unknown> = {}) =>
+		({
+			kind: "voice" as const,
+			updateId,
+			userId: "101",
+			address,
+			fileId: `file-${updateId}`,
+			...extra,
+		}) as Parameters<TelegramChannelController["handle"]>[0];
+
+	transcriber.results.push({ text: " coffee 42  " });
+	assert.deepEqual(
+		await controller.handle(voiceUpdate("1", { mimeType: "audio/ogg", durationSeconds: 5, fileSizeBytes: 400 })),
+		{ status: "completed" },
+	);
+	assert.deepEqual(downloads, [{ fileId: "file-1", maximumBytes: 1_024, aborted: false }]);
+	assert.equal(transcriber.calls.at(-1)?.mimeType, "audio/ogg");
+	assert.deepEqual(Array.from(transcriber.calls.at(-1)?.audio ?? []), [0x4f, 0x67, 0x67, 0x53]);
+	assert.equal(messenger.messages.at(-2)?.text, "Heard: coffee 42");
+	assert.equal(messenger.messages.at(-1)?.text, "Assistant response.");
+	assert.deepEqual(prompts, ["coffee 42"]);
+
+	await controller.handle(voiceUpdate("2", { durationSeconds: 600 }));
+	assert.match(messenger.messages.at(-1)?.text ?? "", /No audio was downloaded/);
+	await controller.handle(voiceUpdate("3", { fileSizeBytes: 4_096 }));
+	assert.match(messenger.messages.at(-1)?.text ?? "", /No audio was downloaded/);
+	assert.equal(downloads.length, 1, "rejected voice messages must not be downloaded");
+
+	transcriber.results.push(new Error("the transcription service is unavailable"));
+	assert.deepEqual(await controller.handle(voiceUpdate("4")), { status: "completed" });
+	assert.match(messenger.messages.at(-1)?.text ?? "", /^Voice transcription failed: the transcription service is unavailable/);
+
+	transcriber.results.push({ text: "   " });
+	await controller.handle(voiceUpdate("5"));
+	assert.match(messenger.messages.at(-1)?.text ?? "", /No speech was recognized/);
+
+	transcriber.results.push({ text: "my key is sk-proj-abcdefghijklmnop" });
+	await controller.handle(voiceUpdate("6"));
+	assert.match(messenger.messages.at(-1)?.text ?? "", /looks like a provider credential/);
+	assert.doesNotMatch(messenger.messages.at(-1)?.text ?? "", /sk-proj-/);
+	assert.deepEqual(prompts, ["coffee 42"], "a credential-shaped transcript must never reach the model");
+
+	const sentBeforeLongTranscript = messenger.messages.length;
+	transcriber.results.push({ text: "x".repeat(2_001) });
+	await controller.handle(voiceUpdate("7"));
+	assert.match(messenger.messages.at(-1)?.text ?? "", /^The transcript was 2001 characters long; the limit is 2000\./);
+	assert.equal(
+		messenger.messages.length,
+		sentBeforeLongTranscript + 1,
+		"an oversized transcript must be refused, not echoed across many messages",
+	);
+	assert.deepEqual(prompts, ["coffee 42"], "an oversized transcript must never reach the model");
+});
+
+test("cancels an in-flight voice download when the channel stops", async (context) => {
+	const database = new WealthDatabase(":memory:");
+	context.after(() => database.close());
+	const wealth = new WealthService(database, { baseCurrency: "HKD" });
+	const identities = new SessionIdentityService(database);
+	const member = identities.createMember({
+		householdId: wealth.household.id,
+		displayName: "Owner",
+		role: "owner",
+		timezone: "UTC",
+	});
+	identities.bindChannelIdentity({ memberId: member.id, channel: "telegram", externalId: "101" });
+	const prompts: string[] = [];
+	const coordinator = new ConversationCoordinator({
+		identities,
+		application: new FinanceApplication(wealth, new ConfirmationStore(database)),
+		runtimeFactory: async () => ({
+			async prompt(text) {
+				prompts.push(text);
+			},
+			abort() {},
+		}),
+	});
+
+	const messenger = new FakeMessenger();
+	let observed: AbortSignal | undefined;
+	let started: (() => void) | undefined;
+	const downloadStarted = new Promise<void>((resolve) => {
+		started = resolve;
+	});
+	const controller = new TelegramChannelController({
+		botId: "9001",
+		config: { allowedChats: [{ chatId: "-1001" }], identities: [{ userId: "101", memberId: member.id }] },
+		coordinator,
+		actions: new ChannelActionRegistry(),
+		receipts: new ChannelUpdateReceiptStore(database),
+		messenger,
+		voice: {
+			transcriber: new FakeTranscriber(),
+			async download({ signal }) {
+				observed = signal;
+				started?.();
+				await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+				throw new Error("The voice download was cancelled.");
+			},
+		},
+	});
+
+	const pending = controller.handle({
+		kind: "voice",
+		updateId: "1",
+		userId: "101",
+		address: { chatId: "-1001" },
+		fileId: "file-1",
+	});
+	await downloadStarted;
+	assert.equal(observed?.aborted, false);
+	controller.stop();
+	assert.deepEqual(await pending, { status: "failed" }, "a cancelled turn must fail closed");
+	assert.equal(observed?.aborted, true);
+	assert.deepEqual(messenger.messages, [], "a cancelled download must not answer into a shutting-down channel");
+	assert.deepEqual(prompts, []);
+	assert.equal(
+		(
+			database.connection
+				.prepare("SELECT status FROM channel_update_receipts WHERE channel = 'telegram'")
+				.get() as { status: string }
+		).status,
+		"failed",
+	);
+});
+
+test("stays silent when shutdown starts while the transcript is being echoed", async (context) => {
+	const database = new WealthDatabase(":memory:");
+	context.after(() => database.close());
+	const wealth = new WealthService(database, { baseCurrency: "HKD" });
+	const identities = new SessionIdentityService(database);
+	const member = identities.createMember({
+		householdId: wealth.household.id,
+		displayName: "Owner",
+		role: "owner",
+		timezone: "UTC",
+	});
+	identities.bindChannelIdentity({ memberId: member.id, channel: "telegram", externalId: "101" });
+	const prompts: string[] = [];
+	const coordinator = new ConversationCoordinator({
+		identities,
+		application: new FinanceApplication(wealth, new ConfirmationStore(database)),
+		runtimeFactory: async () => ({
+			async prompt(text) {
+				prompts.push(text);
+			},
+			abort() {},
+		}),
+	});
+
+	const transcriber = new FakeTranscriber();
+	transcriber.results.push({ text: "coffee 42" });
+	const messenger = new FakeMessenger();
+	let controller: TelegramChannelController | undefined;
+	// Shutdown lands exactly while the echo is in flight, which is the window the
+	// coordinator would otherwise turn into a generic failure response.
+	const echoing = new FakeMessenger();
+	Object.assign(messenger, {
+		async sendMessage(...parameters: Parameters<FakeMessenger["sendMessage"]>) {
+			await echoing.sendMessage(...parameters);
+			controller?.stop();
+		},
+	});
+	controller = new TelegramChannelController({
+		botId: "9001",
+		config: { allowedChats: [{ chatId: "-1001" }], identities: [{ userId: "101", memberId: member.id }] },
+		coordinator,
+		actions: new ChannelActionRegistry(),
+		receipts: new ChannelUpdateReceiptStore(database),
+		messenger,
+		voice: {
+			transcriber,
+			async download() {
+				return { audio: new Uint8Array([1, 2, 3]) };
+			},
+		},
+	});
+
+	assert.deepEqual(
+		await controller.handle({
+			kind: "voice",
+			updateId: "1",
+			userId: "101",
+			address: { chatId: "-1001" },
+			fileId: "file-1",
+		}),
+		{ status: "failed" },
+	);
+	assert.deepEqual(
+		echoing.messages.map((message) => message.text),
+		["Heard: coffee 42"],
+		"only the echo may have been sent before shutdown",
+	);
+	assert.deepEqual(prompts, [], "a cancelled turn must not reach the model");
 });
 
 test("keeps callback payloads short and safely chunks plain Telegram text", () => {
