@@ -89,15 +89,11 @@ test("cancels a hung download on shutdown without waiting for the timeout", asyn
 
 test("unblocks the next download after a hung getFile times out", async (context) => {
 	let calls = 0;
-	const bot = {
-		api: {
-			getFile: async () => {
-				calls += 1;
-				if (calls === 1) await new Promise(() => undefined);
-				return { file_path: "voice/ok.ogg", file_size: AUDIO.byteLength };
-			},
-		},
-	} as Parameters<typeof createTelegramVoiceDownloader>[0];
+	const bot = voiceBot(async () => {
+		calls += 1;
+		if (calls === 1) await new Promise(() => undefined);
+		return { file_path: "voice/ok.ogg", file_size: AUDIO.byteLength };
+	});
 	const restoreFetch = stubFetch(context, async () => audioResponse());
 	const download = createTelegramVoiceDownloader(bot, TOKEN, { timeoutMilliseconds: 40 });
 	const signal = new AbortController().signal;
@@ -128,19 +124,17 @@ test("downloads a voice payload when getFile and fetch complete before the deadl
 });
 
 function hangingGetFileBot(): Parameters<typeof createTelegramVoiceDownloader>[0] {
-	return {
-		api: {
-			getFile: () => new Promise(() => undefined),
-		},
-	} as Parameters<typeof createTelegramVoiceDownloader>[0];
+	return voiceBot(() => new Promise(() => undefined));
 }
 
 function resolvedGetFileBot(): Parameters<typeof createTelegramVoiceDownloader>[0] {
-	return {
-		api: {
-			getFile: async () => ({ file_path: "voice/ok.ogg", file_size: AUDIO.byteLength }),
-		},
-	} as Parameters<typeof createTelegramVoiceDownloader>[0];
+	return voiceBot(async () => ({ file_path: "voice/ok.ogg", file_size: AUDIO.byteLength }));
+}
+
+function voiceBot(
+	getFile: () => Promise<{ file_path?: string; file_size?: number }>,
+): Parameters<typeof createTelegramVoiceDownloader>[0] {
+	return { api: { getFile } } as unknown as Parameters<typeof createTelegramVoiceDownloader>[0];
 }
 
 function audioResponse(): Response {
