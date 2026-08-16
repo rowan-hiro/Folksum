@@ -652,3 +652,71 @@ test("occupies the prompt operation before asynchronous runtime setup", async (c
 	assert.equal(factoryCalls, 1);
 	assert.equal(promptCalls, 1);
 });
+
+test("lists household members and creates one through the /members commands", async (context) => {
+	const directory = createDirectory(context);
+	const configPath = join(directory, "config.json");
+	writeFileSync(configPath, "{}\n");
+	const config = loadApplicationConfig({
+		cwd: directory,
+		env: { FOLKSUM_CONFIG_PATH: configPath },
+	});
+	const database = new WealthDatabase(":memory:");
+	context.after(() => database.close());
+	const wealth = new WealthService(database, { baseCurrency: "HKD" });
+	const identities = new SessionIdentityService(database);
+	const owner = identities.createMember({
+		householdId: wealth.household.id,
+		displayName: "Owner",
+		role: "owner",
+		timezone: "Asia/Hong_Kong",
+	});
+	identities.bindChannelIdentity({ memberId: owner.id, channel: "cli", externalId: "owner" });
+	const scope = identities.resolve({
+		channel: "cli",
+		externalId: "owner",
+		conversationKey: "members-command-test",
+	});
+	const models = createFolksumModels();
+	const settingsController = new PiRuntimeSettingsController({ models, config, env: {} });
+	const applicationSettingsController = new ApplicationSettingsController({ config, env: {} });
+	const terminal = new FakeTerminal();
+
+	const running = runFolksumTui({
+		wealth,
+		identities,
+		scope,
+		database,
+		currentDate: "2026-08-12",
+		config,
+		models,
+		settingsController,
+		applicationSettingsController,
+		terminal,
+	});
+	await new Promise<void>((resolve) => setImmediate(resolve));
+
+	terminal.send("/members");
+	terminal.send("\r");
+	await waitFor(() => terminal.output.includes("Household members"), "the member list");
+	assert.match(terminal.output, /Owner \(owner, Asia\/Hong_Kong\)/);
+
+	terminal.send("/members add");
+	terminal.send("\r");
+	await waitFor(() => terminal.output.includes("New member display name"), "the name prompt");
+	terminal.send("Fengmei");
+	terminal.send("\r");
+	await waitFor(() => terminal.output.includes("Member role"), "the role prompt");
+	terminal.send("\r");
+	await waitFor(() => terminal.output.includes("Member timezone"), "the timezone prompt");
+	terminal.send("\r");
+	await waitFor(() => terminal.output.includes("Member created: Fengmei"), "the creation receipt");
+
+	const members = identities.listMembers(wealth.household.id);
+	const created = members.find((member) => member.displayName === "Fengmei");
+	assert.equal(created?.role, "member");
+	assert.equal(created?.timezone, "Asia/Hong_Kong");
+
+	terminal.send("\u0003");
+	await running;
+});
