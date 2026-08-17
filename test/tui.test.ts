@@ -358,7 +358,11 @@ test("restores the displayed card mode when an environment override rejects the 
 	await waitFor(() => authChecks >= checkBaseline + 2, "the second authoritative refresh");
 
 	assert.deepEqual(attemptedModes, ["integrated", "integrated"]);
-	assert.deepEqual(applicationSettingsController.current(), { cardTrackingMode: "lightweight" });
+	assert.deepEqual(applicationSettingsController.current(), {
+		cardTrackingMode: "lightweight",
+		voiceTranscription: "off",
+		voiceModel: "google/gemini-2.5-flash",
+	});
 	assert.equal(wealth.getCardTrackingMode(), "lightweight");
 	assert.equal(readFileSync(configPath, "utf8"), originalConfig);
 	terminal.send("\u001b");
