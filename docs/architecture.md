@@ -641,11 +641,12 @@ monotonic and execute in transactions. Non-secret runtime settings are stored in
 the local JSON configuration file, with environment variables taking precedence.
 The TUI and an allow-listed model tool can update provider, model, and thinking
 level; changes are validated against the installed Pi catalog before an atomic
-JSON replacement. The TUI and the local `folksum settings` command can also
-update `cardTrackingMode` and the voice transcription provider and model, but
-those application settings are handled by a separate local controller and are
-never readable or writable through the model tool. Voice settings are consumed
-when the telegram process starts, so changes apply on its next start.
+JSON replacement. The TUI can also update `cardTrackingMode`, while both the TUI
+and the local `folksum settings` command can update the voice transcription
+provider and model. Those application settings are handled by a separate local
+controller and are never readable or writable through the model tool. Voice
+settings are consumed when the telegram process starts, so changes apply on its
+next start.
 
 The database and non-secret JSON configuration contain no LLM credentials.
 Provider API keys and OAuth tokens use the `pi-ai` credential schema in
