@@ -496,13 +496,20 @@ class FolksumTui {
 						"Model ID used to transcribe Telegram voice. Applies on the next telegram start.",
 					currentValue: applicationSnapshot.voiceModel,
 					submenu: (currentValue: string, done: (selectedValue?: string) => void): Component => {
+						// pi-tui's Input keeps the cursor at position 0 after setValue, so
+						// prefilling would concatenate typed text with the stored model.
+						// Start empty instead: typed input replaces the model wholesale and
+						// an empty submission keeps the current value.
 						const input = new Input();
-						input.setValue(currentValue);
 						input.onSubmit = (value) => {
 							if (value.trim()) done(value);
+							else done();
 						};
 						input.onEscape = () => done();
-						const prompt = new DelegatingPrompt("Voice transcription model ID", input);
+						const prompt = new DelegatingPrompt(
+							`Voice transcription model ID (current: ${currentValue})`,
+							input,
+						);
 						prompt.focused = true;
 						return prompt;
 					},
