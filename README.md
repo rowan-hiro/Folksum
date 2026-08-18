@@ -41,10 +41,14 @@ folksum members
 folksum members add --name <display-name> [--role owner|member|viewer] [--timezone <iana-timezone>]
 folksum reminders
 folksum schedule
+folksum settings show
+folksum settings set <voice-transcription|voice-model> <value>
 ```
 
 `folksum members` lists household members; `members add` creates one. The
 role defaults to `member` and the timezone to the configured `timezone`.
+`folksum settings show` prints the effective voice transcription settings, and
+`settings set` persists the voice provider (`off` or `openrouter`) or model.
 
 ## Telegram alpha
 
@@ -91,7 +95,12 @@ as a new message.
 
 Voice transcription is disabled by default. While `voiceTranscription` is
 `off`, voice files are not downloaded or sent anywhere and the bot asks the user
-to send text instead.
+to send text instead. The provider (`off` or `openrouter`) and model can also
+be changed from the TUI settings screen or with
+`folksum settings set voice-transcription <mode>` and
+`folksum settings set voice-model <model-id>`; changes apply on the next
+telegram process start. Keys overridden by `FOLKSUM_VOICE_TRANSCRIPTION` or
+`FOLKSUM_VOICE_MODEL` cannot be changed this way.
 
 Setting `voiceTranscription` to `openrouter` enables opt-in transcription. An
 allow-listed voice message is downloaded from the Telegram file API and handed

@@ -44,6 +44,9 @@ import { runFolksumTui } from "./tui.ts";
 const MEMBERS_USAGE =
 	"Usage: folksum members [list] | add --name <display-name> [--role owner|member|viewer] [--timezone <iana-timezone>]";
 
+// Declared before the top-level command dispatch for the same reason.
+const SETTINGS_USAGE = "Usage: folksum settings show | set <voice-transcription|voice-model> <value>";
+
 const config = loadApplicationConfig();
 const databasePath = resolve(config.databasePath);
 const database = new WealthDatabase(databasePath);
@@ -76,6 +79,8 @@ try {
 		runExportCommand(exporter, scope.householdId, process.argv.slice(3));
 	} else if (command === "members") {
 		runMembersCommand(identities, wealth, config, process.argv.slice(3));
+	} else if (command === "settings") {
+		await runSettingsCommand(config, applicationSettingsController, process.argv.slice(3));
 	} else if (command === "tui") {
 		const { models, settingsController } = createModelServices(config);
 		await runFolksumTui({
@@ -115,7 +120,7 @@ try {
 		});
 	} else {
 		throw new Error(
-			`Unknown command "${command}". Use tui, chat, telegram, members, reminders, schedule, profile, or export.`,
+			`Unknown command "${command}". Use tui, chat, telegram, members, reminders, schedule, profile, export, or settings.`,
 		);
 	}
 } finally {
@@ -362,6 +367,49 @@ function parseMemberAddOptions(args: string[]): { name: string; role: HouseholdR
 	}
 	if (!name) throw new Error(MEMBERS_USAGE);
 	return { name, role, timezone };
+}
+
+async function runSettingsCommand(
+	config: ApplicationConfig,
+	applicationSettingsController: ApplicationSettingsController,
+	args: string[],
+): Promise<void> {
+	const action = args[0] ?? "show";
+	if (action === "show") {
+		if (args.length > 1) throw new Error(SETTINGS_USAGE);
+		console.log(
+			JSON.stringify(
+				{
+					voiceTranscription: config.voiceTranscription,
+					voiceModel: config.voiceModel,
+					voiceEndpoint: config.voiceEndpoint,
+					...(config.voiceLanguage ? { voiceLanguage: config.voiceLanguage } : {}),
+					voiceCommand: config.voiceCommand,
+				},
+				null,
+				2,
+			),
+		);
+		return;
+	}
+	if (action === "set") {
+		const [, key, value, ...rest] = args;
+		if (!key || value === undefined || rest.length > 0) throw new Error(SETTINGS_USAGE);
+		if (key === "voice-transcription") {
+			const next = await applicationSettingsController.update({
+				voiceTranscription: value as ApplicationConfig["voiceTranscription"],
+			});
+			console.log(JSON.stringify({ status: "updated", voiceTranscription: next.voiceTranscription }));
+			return;
+		}
+		if (key === "voice-model") {
+			const next = await applicationSettingsController.update({ voiceModel: value });
+			console.log(JSON.stringify({ status: "updated", voiceModel: next.voiceModel }));
+			return;
+		}
+		throw new Error(SETTINGS_USAGE);
+	}
+	throw new Error(SETTINGS_USAGE);
 }
 
 function runProfileCommand(

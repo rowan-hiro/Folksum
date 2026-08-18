@@ -48,6 +48,8 @@ const WRITABLE_SETTING_ENVIRONMENT_VARIABLES = {
 	model: "FOLKSUM_MODEL",
 	thinkingLevel: "FOLKSUM_THINKING_LEVEL",
 	cardTrackingMode: "FOLKSUM_CARD_TRACKING_MODE",
+	voiceTranscription: "FOLKSUM_VOICE_TRANSCRIPTION",
+	voiceModel: "FOLKSUM_VOICE_MODEL",
 } as const;
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -69,6 +71,8 @@ export interface RuntimeSettingsPatch {
 
 export interface ApplicationSettingsPatch {
 	cardTrackingMode?: CardTrackingMode;
+	voiceTranscription?: VoiceTranscriptionMode;
+	voiceModel?: string;
 }
 
 export type ApplicationConfigPatch = RuntimeSettingsPatch & ApplicationSettingsPatch;
@@ -224,7 +228,10 @@ export function patchApplicationConfig(
 		if (key === "model" && value === null) {
 			delete file.model;
 		} else {
-			file[key] = key === "model" && typeof value === "string" ? value.trim() : value;
+			file[key] =
+				(key === "model" || key === "voiceModel") && typeof value === "string"
+					? value.trim()
+					: value;
 		}
 	}
 	writeJsonAtomically(configPath, file);
@@ -317,6 +324,20 @@ function validateApplicationConfigPatch(patch: Record<string, unknown>): void {
 		throw new ApplicationConfigError(
 			`Unsupported credit-card tracking mode "${String(patch.cardTrackingMode)}". Use ${CARD_TRACKING_MODES.join(", ")}.`,
 		);
+	}
+	if (
+		"voiceTranscription" in patch &&
+		(typeof patch.voiceTranscription !== "string" || !isVoiceTranscriptionMode(patch.voiceTranscription))
+	) {
+		throw new ApplicationConfigError(
+			`Unsupported voice transcription mode "${String(patch.voiceTranscription)}". Use ${VOICE_TRANSCRIPTION_MODES.join(", ")}.`,
+		);
+	}
+	if (
+		"voiceModel" in patch &&
+		(typeof patch.voiceModel !== "string" || !patch.voiceModel.trim())
+	) {
+		throw new ApplicationConfigError('Configuration value "voiceModel" must be a non-empty string.');
 	}
 }
 

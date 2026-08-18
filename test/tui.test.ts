@@ -277,6 +277,126 @@ test("keeps settings open while changing runtime and credit-card tracking settin
 	await running;
 });
 
+test("replaces the voice model through the settings submenu with the exact typed value", async (context) => {
+	// String.fromCharCode keeps control keys explicit: Ctrl+O, down, Enter, Escape, Ctrl+C.
+	const controlO = String.fromCharCode(15);
+	const enter = String.fromCharCode(13);
+	const escape = String.fromCharCode(27);
+	const controlC = String.fromCharCode(3);
+	const down = `${escape}[B`;
+
+	const directory = createDirectory(context);
+	const configPath = join(directory, "config.json");
+	writeFileSync(configPath, "{}\n");
+	const config = loadApplicationConfig({
+		cwd: directory,
+		env: { FOLKSUM_CONFIG_PATH: configPath },
+	});
+	const database = new WealthDatabase(":memory:");
+	context.after(() => database.close());
+	const wealth = new WealthService(database, { baseCurrency: "HKD" });
+	const identities = new SessionIdentityService(database);
+	const owner = identities.createMember({
+		householdId: wealth.household.id,
+		displayName: "Owner",
+		role: "owner",
+		timezone: "Asia/Hong_Kong",
+	});
+	identities.bindChannelIdentity({ memberId: owner.id, channel: "cli", externalId: "owner" });
+	const scope = identities.resolve({
+		channel: "cli",
+		externalId: "owner",
+		conversationKey: "voice-model-settings-test",
+	});
+	const models = createFolksumModels();
+	const settingsController = new PiRuntimeSettingsController({ models, config, env: {} });
+	const applicationSettingsController = new ApplicationSettingsController({ config, env: {} });
+	const terminal = new FakeTerminal();
+
+	const running = runFolksumTui({
+		wealth,
+		identities,
+		scope,
+		database,
+		currentDate: "2026-08-12",
+		config,
+		models,
+		settingsController,
+		applicationSettingsController,
+		terminal,
+	});
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	terminal.send(controlO);
+	await waitFor(() => terminal.output.includes("Voice model"), "the settings overlay");
+
+	// "Voice model" appears once per settings-list render. While an update is
+	// applied the locked panel appends an "Applying…" hint, so a fresh list
+	// render after the last hint means the panel accepted input again.
+	const voiceRowRenders = () => terminal.output.split("Voice model").length - 1;
+	const panelSettled = (baseline: number) =>
+		voiceRowRenders() > baseline &&
+		terminal.output.lastIndexOf("Voice model") > terminal.output.lastIndexOf("Applying…");
+
+	// Move from Provider to the Voice model row and open its editor.
+	for (let index = 0; index < 5; index += 1) terminal.send(down);
+	terminal.send(enter);
+	await waitFor(
+		() =>
+			terminal.output.includes(
+				"Voice transcription model ID (current: google/gemini-2.5-flash)",
+			),
+		"the voice model editor",
+	);
+
+	const applyBaseline = voiceRowRenders();
+	terminal.send("acme/hearing-large");
+	terminal.send(enter);
+	await waitFor(
+		() => applicationSettingsController.current().voiceModel === "acme/hearing-large",
+		"the first voice model update",
+	);
+	assert.deepEqual(JSON.parse(readFileSync(configPath, "utf8")), {
+		voiceModel: "acme/hearing-large",
+	});
+
+	// Wait for the apply round-trip before closing, or the locked panel swallows
+	// the Escape. The transcript confirmation renders once the overlay closes.
+	await waitFor(
+		() => panelSettled(applyBaseline),
+		"the settings panel to settle after the first update",
+	);
+	terminal.send(escape);
+	await waitFor(
+		() => terminal.output.includes("Application settings updated: voice model acme/hearing-large."),
+		"the first update confirmation",
+	);
+
+	// A second edit replaces the stored value instead of extending it.
+	const reopenBaseline = voiceRowRenders();
+	terminal.send(controlO);
+	await waitFor(() => voiceRowRenders() > reopenBaseline, "the reopened settings overlay");
+	for (let index = 0; index < 5; index += 1) terminal.send(down);
+	terminal.send(enter);
+	await waitFor(
+		() =>
+			terminal.output.includes("Voice transcription model ID (current: acme/hearing-large)"),
+		"the reopened voice model editor",
+	);
+	terminal.send("second/model");
+	terminal.send(enter);
+	await waitFor(
+		() => applicationSettingsController.current().voiceModel === "second/model",
+		"the replacement voice model update",
+	);
+	assert.deepEqual(JSON.parse(readFileSync(configPath, "utf8")), {
+		voiceModel: "second/model",
+	});
+
+	terminal.send(escape);
+	terminal.send(controlC);
+	await running;
+});
+
 test("restores the displayed card mode when an environment override rejects the change", async (context) => {
 	const directory = createDirectory(context);
 	const configPath = join(directory, "config.json");
@@ -358,7 +478,11 @@ test("restores the displayed card mode when an environment override rejects the 
 	await waitFor(() => authChecks >= checkBaseline + 2, "the second authoritative refresh");
 
 	assert.deepEqual(attemptedModes, ["integrated", "integrated"]);
-	assert.deepEqual(applicationSettingsController.current(), { cardTrackingMode: "lightweight" });
+	assert.deepEqual(applicationSettingsController.current(), {
+		cardTrackingMode: "lightweight",
+		voiceTranscription: "off",
+		voiceModel: "google/gemini-2.5-flash",
+	});
 	assert.equal(wealth.getCardTrackingMode(), "lightweight");
 	assert.equal(readFileSync(configPath, "utf8"), originalConfig);
 	terminal.send("\u001b");
