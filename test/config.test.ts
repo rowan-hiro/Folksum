@@ -136,15 +136,17 @@ test("validates voice transcription settings and keeps the key out of the JSON f
 		() => loadApplicationConfig({ cwd: directory, env: { FOLKSUM_CONFIG_PATH: "with-key.json" } }),
 		/Unknown configuration value "voiceApiKey"/,
 	);
-	assert.throws(
-		() =>
-			patchApplicationConfig(
-				join(directory, "config.json"),
-				{ voiceTranscription: "openrouter" } as never,
-				{ env: {} },
-			),
-		/cannot be changed at runtime/,
+
+	const writablePath = join(directory, "config.json");
+	patchApplicationConfig(
+		writablePath,
+		{ voiceTranscription: "openrouter", voiceModel: " vendor/model " },
+		{ env: {} },
 	);
+	assert.deepEqual(JSON.parse(readFileSync(writablePath, "utf8")), {
+		voiceTranscription: "openrouter",
+		voiceModel: "vendor/model",
+	});
 });
 
 test("environment variables override individual JSON settings", (context) => {
@@ -267,6 +269,24 @@ test("rejects writable settings that are overridden by environment variables", (
 		() =>
 			patchApplicationConfig(
 				path,
+				{ voiceTranscription: "openrouter" },
+				{ env: { FOLKSUM_VOICE_TRANSCRIPTION: "off" } },
+			),
+		/FOLKSUM_VOICE_TRANSCRIPTION/,
+	);
+	assert.throws(
+		() =>
+			patchApplicationConfig(
+				path,
+				{ voiceModel: "vendor/model" },
+				{ env: { FOLKSUM_VOICE_MODEL: "other/model" } },
+			),
+		/FOLKSUM_VOICE_MODEL/,
+	);
+	assert.throws(
+		() =>
+			patchApplicationConfig(
+				path,
 				{ databasePath: "other.db" } as never,
 				{ env: {} },
 			),
@@ -326,6 +346,15 @@ test("rejects missing explicit files and invalid JSON settings", (context) => {
 	assert.throws(
 		() => patchApplicationConfig(path, { cardTrackingMode: "automatic" as never }, { env: {} }),
 		/Unsupported credit-card tracking mode/,
+	);
+
+	assert.throws(
+		() => patchApplicationConfig(path, { voiceTranscription: "whisper" as never }, { env: {} }),
+		/Unsupported voice transcription mode/,
+	);
+	assert.throws(
+		() => patchApplicationConfig(path, { voiceModel: "  " }, { env: {} }),
+		/"voiceModel" must be a non-empty string/,
 	);
 
 	writeFileSync(path, "not json");

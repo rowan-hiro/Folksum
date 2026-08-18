@@ -29,6 +29,10 @@ import { FinanceApplication } from "../app/finance-application.ts";
 import type { HouseholdRole, IdentityScope } from "../app/identity.ts";
 import { SessionIdentityService } from "../app/session.ts";
 import { ApplicationSettingsController } from "../app/settings.ts";
+import {
+	isVoiceTranscriptionMode,
+	VOICE_TRANSCRIPTION_MODES,
+} from "../app/voice-transcriber.ts";
 import { CARD_TRACKING_MODES, isCardTrackingMode } from "../core/card-tracking.ts";
 import { WealthDatabase } from "../core/database.ts";
 import { WealthService } from "../core/wealth-service.ts";
@@ -478,6 +482,39 @@ class FolksumTui {
 					values: [...CARD_TRACKING_MODES],
 				},
 				{
+					id: "voiceTranscription",
+					label: "Voice transcription",
+					description:
+						"Provider for Telegram voice messages. Applies on the next telegram start. Environment overrides cannot be changed here.",
+					currentValue: applicationSnapshot.voiceTranscription,
+					values: [...VOICE_TRANSCRIPTION_MODES],
+				},
+				{
+					id: "voiceModel",
+					label: "Voice model",
+					description:
+						"Model ID used to transcribe Telegram voice. Applies on the next telegram start.",
+					currentValue: applicationSnapshot.voiceModel,
+					submenu: (currentValue: string, done: (selectedValue?: string) => void): Component => {
+						// pi-tui's Input keeps the cursor at position 0 after setValue, so
+						// prefilling would concatenate typed text with the stored model.
+						// Start empty instead: typed input replaces the model wholesale and
+						// an empty submission keeps the current value.
+						const input = new Input();
+						input.onSubmit = (value) => {
+							if (value.trim()) done(value);
+							else done();
+						};
+						input.onEscape = () => done();
+						const prompt = new DelegatingPrompt(
+							`Voice transcription model ID (current: ${currentValue})`,
+							input,
+						);
+						prompt.focused = true;
+						return prompt;
+					},
+				},
+				{
 					id: "authentication",
 					label: "Authentication",
 					description: "Credentials stay local and are never exposed to the model.",
@@ -570,6 +607,14 @@ class FolksumTui {
 			"cardTrackingMode",
 			this.input.applicationSettingsController.current().cardTrackingMode,
 		);
+		view.settings.updateValue(
+			"voiceTranscription",
+			this.input.applicationSettingsController.current().voiceTranscription,
+		);
+		view.settings.updateValue(
+			"voiceModel",
+			this.input.applicationSettingsController.current().voiceModel,
+		);
 
 		const generation = ++view.authGeneration;
 		const auth = await this.readAuthState(settings.provider);
@@ -620,6 +665,29 @@ class FolksumTui {
 					this.append(
 						"System",
 						`Application settings updated: credit-card tracking ${next.cardTrackingMode}.`,
+					);
+					return;
+				}
+				case "voiceTranscription": {
+					if (!isVoiceTranscriptionMode(value)) {
+						throw new Error(`Unsupported voice transcription mode "${value}".`);
+					}
+					const next = await this.input.applicationSettingsController.update({
+						voiceTranscription: value,
+					});
+					this.append(
+						"System",
+						`Application settings updated: voice transcription ${next.voiceTranscription}. Applies on the next telegram start.`,
+					);
+					return;
+				}
+				case "voiceModel": {
+					const next = await this.input.applicationSettingsController.update({
+						voiceModel: value,
+					});
+					this.append(
+						"System",
+						`Application settings updated: voice model ${next.voiceModel}. Applies on the next telegram start.`,
 					);
 					return;
 				}

@@ -65,9 +65,11 @@ npm start
 Open settings with `Ctrl+O` or `/settings`. The `/members` command lists
 household members, and `/members add` creates one through an interactive
 name, role, and timezone prompt. The TUI can select the provider,
-model, thinking level, and credit-card tracking mode, and can run the
+model, thinking level, credit-card tracking mode, and the voice
+transcription provider and model, and can run the
 provider-owned API-key or OAuth login flow. Non-secret choices are persisted in
-the JSON configuration file. Provider
+the JSON configuration file. Voice settings apply to Telegram voice messages
+and take effect on the next telegram process start. Provider
 credentials are kept separately in `~/.folksum/auth.json`; override
 that location with `FOLKSUM_AUTH_PATH` when needed. The credential directory and
 file are created with `0700` and `0600` permissions on POSIX systems.
@@ -75,7 +77,8 @@ file are created with `0700` and `0600` permissions on POSIX systems.
 device-code OAuth flow through this settings screen.
 
 The model may update only provider, model, and thinking level through the
-`update_runtime_settings` tool. Credit-card tracking mode and credentials are
+`update_runtime_settings` tool. Credit-card tracking mode, voice transcription
+settings, and credentials are
 local-only settings: the model can observe the active accounting behavior but
 cannot change it. Credentials must never be pasted into chat or exposed to the
 model; configure them through the local TUI login flow. Existing provider
@@ -121,7 +124,14 @@ npm run reminders
 npm run schedule
 folksum members
 folksum members add --name <display-name> [--role owner|member|viewer] [--timezone <iana-timezone>]
+folksum settings show
+folksum settings set <voice-transcription|voice-model> <value>
 ```
+
+`folksum settings show` prints the effective voice transcription settings, and
+`settings set` persists the voice provider (`off` or `openrouter`) or model to
+the JSON configuration file. Keys overridden by their environment variable
+cannot be changed through either the command or the TUI settings screen.
 
 Bookkeeping profiles use revision-aware JSON documents or constrained DSL
 overlays. Households can declare categories, typed fields, capture shortcuts,
