@@ -1,6 +1,6 @@
 {
 	"name": "folksum",
-	"version": "0.4.0",
+	"version": "0.5.0",
 	"description": "Financial Intelligence & Record Engine for local-first household finance",
 	"type": "module",
 	"license": "MIT",
